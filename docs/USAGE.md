@@ -164,8 +164,30 @@ Only the existing supported Claude Code transcript format is counted. Selecting 
 Run the scanner fixtures without real accounts:
 
 ```sh
-xcrun swiftc -swift-version 6 Sources/ClaudeCodeConfigurations.swift Sources/ClaudeCodeLinking.swift Sources/ClaudeCodeTokens.swift Tests/MultipleConfigurationsTests.swift -o /tmp/quota-config-tests
+xcrun swiftc -swift-version 6 Sources/ClaudeCodeConfigurations.swift Sources/ClaudeCodeLinking.swift Sources/TokenCoverage.swift Sources/ClaudeCodeTokens.swift Tests/MultipleConfigurationsTests.swift -o /tmp/quota-config-tests
 /tmp/quota-config-tests
 ```
 
 `Tests/MultipleConfigurationStoreTests.swift` verifies selection persistence, relaunch, source attribution and removal through the real store. Compile it with all source files except `Sources/QuotaSignal.swift`, then run with `CLAUDE_CONFIG_DIR` set to an empty temporary directory. The standalone test has a separate preferences domain.
+
+
+## Understand token coverage
+
+Dashboard token labels distinguish **Account ID needed**, **Checking local logs…**, **No attributable logs this week**, **Log folders inaccessible**, **Log ownership unverified**, and **Partial token coverage**. A missing current weekly reset or multiple Quota Signal accounts sharing the same email has its own state. A scan in progress shows checking until its result is ready.
+
+In account details, choose **Coverage…** beside the Claude Code total. This opens Log Sources with the selected account's explanation, source contributions, access state, count of considered logs with unverified ownership, and last completed scan time. Missing folders and access failures are distinct from a readable configuration that has no `projects` folder yet. Permission failures while reading individual transcripts or subfolders make that source partial; the scanner checks access again before reusing a cached transcript.
+
+A **partial** total includes only requests that could be read and attributed. Unreadable records and logs with missing, unknown or contradictory ownership are excluded. Ownership gaps are reported across the enabled sources because excluded logs cannot safely be assigned to a particular account; they may belong to another account. Conflicting ID metadata associated with an account is also explained explicitly. Use **Link Claude Code…** to review identities, adjust enabled folders or their access, then rescan. No ownership is inferred from directory names or from whichever account happens to be signed in now.
+
+**No attributable logs this week** means the ID is linked, the scan completed without a detected access/ownership gap, and no eligible requests were found in the account's current weekly window. It does not mean the account has never been used. Totals cover supported local Claude Code records only, not Claude website activity, other devices, missing transcripts or every possible log format.
+
+Input, output, **Cache read** and **Cache write** totals are visible separately in account details and in the accessibility description. Cache reads and writes both contribute to the displayed local token total. These token counts do not measure quota percentage.
+
+Run the coverage scanner fixtures:
+
+```sh
+xcrun swiftc -swift-version 6 Sources/TokenCoverage.swift Sources/ClaudeCodeConfigurations.swift Sources/ClaudeCodeLinking.swift Sources/ClaudeCodeTokens.swift Tests/TokenCoverageTests.swift -o /tmp/quota-coverage-tests
+/tmp/quota-coverage-tests
+```
+
+`Tests/TokenCoverageStoreTests.swift` checks the user-facing state decisions through the real store. Compile it with all source files except `Sources/QuotaSignal.swift`, then run with `CLAUDE_CONFIG_DIR` set to an empty temporary directory. Tests use synthetic metadata/logs and restore temporary permission changes.

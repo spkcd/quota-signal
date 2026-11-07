@@ -118,8 +118,14 @@ enum Bridge {
 @MainActor
 final class UsageStore: ObservableObject {
     enum LocalTokenStatus {
-        case checking, needsID, awaitingCycle, ambiguous, noLogs
+        case checking, needsID, awaitingCycle, ambiguous, noLogs, inaccessible, ownershipUnknown
         case recorded(ClaudeCodeTokens.Counts)
+        case partial(ClaudeCodeTokens.Counts)
+
+        var counts: ClaudeCodeTokens.Counts? {
+            switch self { case let .recorded(counts), let .partial(counts): counts; default: nil }
+        }
+
 
         var label: String {
             switch self {
@@ -129,6 +135,9 @@ final class UsageStore: ObservableObject {
             case .ambiguous: "Multiple accounts share this email"
             case .noLogs: "No attributable logs this week"
             case .recorded: "Local logs found"
+            case .partial: "Partial token coverage"
+            case .inaccessible: "Log folders inaccessible"
+            case .ownershipUnknown: "Log ownership unverified"
             }
         }
     }
@@ -146,6 +155,9 @@ final class UsageStore: ObservableObject {
     @Published private(set) var contributingTokenDirectories: [UUID: Set<URL>] = [:]
     @Published private(set) var scannedTokenDirectories = Set<URL>()
     @Published var showingLogSources = false
+    @Published private(set) var localTokenCoverage = TokenCoverage()
+    @Published private(set) var localTokenScanInProgress = false
+    private var conflictedTokenEmails = Set<String>()
 
     @Published private var localTokenTotals: [UUID: ClaudeCodeTokens.Counts] = [:]
     @Published private var linkedTokenEmails: Set<String>?
@@ -312,8 +324,9 @@ final class UsageStore: ObservableObject {
 
     func localTokenStatus(for account: Account) -> LocalTokenStatus {
         if demo { return .recorded(.init(input: 248_600, output: 93_400, cacheWrite: 120_000, cacheRead: 614_000)) }
-        guard let linkedTokenEmails else { return .checking }
+        guard !localTokenScanInProgress, let linkedTokenEmails else { return .checking }
         let email = tokenEmail(for: account)
+        if conflictedTokenEmails.contains(email) { return .ownershipUnknown }
         guard linkedTokenEmails.contains(email) else { return .needsID }
         guard let reset = account.latest?.reset, reset > .now else { return .awaitingCycle }
         let query = ClaudeCodeTokens.Query(id: account.id, email: email, reset: reset)
@@ -324,7 +337,26 @@ final class UsageStore: ObservableObject {
             return matching.count > 1 ? .ambiguous : .checking
         }
         guard localTokenScanCompletedAt != nil else { return .checking }
-        return localTokenTotals[account.id].map(LocalTokenStatus.recorded) ?? .noLogs
+        if let counts = localTokenTotals[account.id] {
+            return localTokenCoverage.isPartial ? .partial(counts) : .recorded(counts)
+        }
+        if localTokenCoverage.hasUnavailable { return .inaccessible }
+        if localTokenCoverage.hasUnverifiedOwnership { return .ownershipUnknown }
+        return .noLogs
+    }
+
+    func tokenCoverageExplanation(for account: Account) -> String {
+        let status = localTokenStatus(for: account)
+        switch status {
+        case .checking: return "A local scan is in progress. Coverage and totals will update when it finishes."
+        case .needsID: return "No verified Claude Code ID is linked to this email. Use Link Claude Code to find and verify it; this is different from having no logs this week."
+        case .awaitingCycle: return "A current weekly quota/reset reading is needed to choose the token window. Refresh this account first."
+        case .ambiguous: return "Multiple Quota Signal accounts use this email. Token requests cannot be assigned to a unique account, so totals are withheld."
+        case .noLogs: return "The ID is linked and the scan found no eligible attributable requests in this weekly window. This does not prove that no activity occurred on another device."
+        case .ownershipUnknown where conflictedTokenEmails.contains(tokenEmail(for: account)):
+            return "Local metadata makes conflicting email claims for a Claude Code ID associated with this account. Conflicting IDs are excluded. Review the selected configurations and link a verified ID."
+        default: return localTokenCoverage.explanation
+        }
     }
 
     func refreshLocalTokens(force: Bool = false) {
@@ -345,9 +377,11 @@ final class UsageStore: ObservableObject {
             tokenQueries = queries
         }
         let directories = localTokenDirectories
+        localTokenScanInProgress = true
         tokenTask = Task {
             defer {
                 tokenTask = nil
+                localTokenScanInProgress = false
                 if tokenRescanRequested {
                     tokenRescanRequested = false
                     refreshLocalTokens(force: true)
@@ -359,12 +393,15 @@ final class UsageStore: ObservableObject {
                 if let uuid = UUID(uuidString: id) { identities[uuid] = email.lowercased() }
             }
             let discovery = await Task.detached { ClaudeCodeLinking.discover(configs: directories) }.value
+            let disputedEmails = Set(identities.filter { discovery.conflictingIDs.contains($0.key) }.values)
             identities = identities.filter { !discovery.conflictingIDs.contains($0.key) }
             identities.merge(discovery.identities) { _, newer in newer }
             defaults.set(Dictionary(uniqueKeysWithValues: identities.map { ($0.key.uuidString, $0.value) }),
                          forKey: "claudeCodeLogIdentities")
             let result = await claudeCodeTokens.scan(for: queries, knownEmails: identities, directories: directories)
             guard directories == localTokenDirectories else { tokenRescanRequested = true; return }
+            conflictedTokenEmails = disputedEmails.union(discovery.conflictingEmails)
+            localTokenCoverage = result.coverage
             localTokenTotals = result.totals
             contributingTokenDirectories = result.contributingDirectories
             scannedTokenDirectories = result.scannedDirectories
@@ -395,6 +432,7 @@ final class UsageStore: ObservableObject {
         defaults.set(urls.dropFirst().map(\.path), forKey: ClaudeCodeConfigurations.preferenceKey)
         localTokenTotals = [:]
         contributingTokenDirectories = [:]
+        localTokenCoverage = TokenCoverage()
         scannedTokenDirectories = []
         localTokenScanCompletedAt = nil
         refreshLocalTokens(force: true)

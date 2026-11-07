@@ -339,7 +339,9 @@ struct PanelView: View {
                 SegmentMeter(percent: percent, color: usageColor)
                 CycleChart(readings: expired ? [] : account.cycle, reset: expired ? nil : latest?.reset,
                            color: usageColor, tokenStatus: store.localTokenStatus(for: account),
-                           tokenScanCompletedAt: store.demo || expired ? nil : store.localTokenScanCompletedAt)
+                           tokenScanCompletedAt: store.demo || expired ? nil : store.localTokenScanCompletedAt,
+                           coverageExplanation: store.tokenCoverageExplanation(for: account),
+                           showCoverage: { store.showingLogSources = true })
                 resetRows(account, now: context.date, expired: expired)
                 Spacer(minLength: 0)
                 footer(account)
@@ -493,9 +495,14 @@ struct CycleChart: View {
     var color: Color
     var tokenStatus: UsageStore.LocalTokenStatus
     var tokenScanCompletedAt: Date?
+    var coverageExplanation: String = ""
+    var showCoverage: () -> Void = {}
 
     private var tokenSummary: String {
-        if case let .recorded(counts) = tokenStatus { return "Claude Code · " + counts.total.formatted() + " tokens" }
+        if let counts = tokenStatus.counts {
+            let suffix = { if case .partial = tokenStatus { return " · partial" }; return "" }()
+            return "Claude Code · " + counts.total.formatted() + " tokens" + suffix
+        }
         return "Claude Code · " + tokenStatus.label
     }
 
@@ -559,30 +566,35 @@ struct CycleChart: View {
             }
             .font(.system(size: 10)).foregroundStyle(Instrument.muted)
             .padding(.leading, 25)
-            Text(tokenSummary)
-                .font(.system(size: 11)).foregroundStyle(Instrument.muted)
-                .help("Tokens attributed to this account from local Claude Code logs in the current weekly quota window. Demo mode uses sample counts." + tokenScanStatus)
-            if case let .recorded(counts) = tokenStatus {
+            HStack {
+                Text(tokenSummary).lineLimit(1).minimumScaleFactor(0.85)
+                Spacer(minLength: 3)
+                Button("Coverage…", action: showCoverage).buttonStyle(.borderless)
+                    .accessibilityLabel("Explain Claude Code token coverage")
+            }
+            .font(.system(size: 11)).foregroundStyle(Instrument.muted)
+            .help(coverageExplanation + tokenScanStatus)
+            if let counts = tokenStatus.counts {
                 HStack(spacing: 8) {
                     tokenColumn("Input", count: counts.input)
                     tokenColumn("Output", count: counts.output)
-                    tokenColumn("Cache", count: counts.cache)
-                        .help("Cache read: \(counts.cacheRead.formatted()) · Cache write: \(counts.cacheWrite.formatted())")
+                    tokenColumn("Cache read", count: counts.cacheRead)
+                    tokenColumn("Cache write", count: counts.cacheWrite)
                 }
             }
         }
         .padding(10)
         .background(Instrument.well, in: RoundedRectangle(cornerRadius: 8))
-        .accessibilityElement(children: .ignore)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("Weekly history")
         .accessibilityValue((readings.isEmpty ? "No readings. " :
             "From \(Instrument.percentage(readings.first!.percent)) to \(Instrument.percentage(readings.last!.percent)). ")
-            + tokenSummary + tokenAccessibilityBreakdown + tokenScanStatus)
+            + tokenSummary + tokenAccessibilityBreakdown + tokenScanStatus + " " + coverageExplanation)
     }
 
     private var tokenAccessibilityBreakdown: String {
-        guard case let .recorded(counts) = tokenStatus else { return "." }
-        return ". Input \(counts.input.formatted()), output \(counts.output.formatted()), cache \(counts.cache.formatted())."
+        guard let counts = tokenStatus.counts else { return "." }
+        return ". Input \(counts.input.formatted()), output \(counts.output.formatted()), cache read \(counts.cacheRead.formatted()), cache write \(counts.cacheWrite.formatted())."
     }
 
     private func tokenColumn(_ label: String, count: Int64) -> some View {

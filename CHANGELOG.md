@@ -4,6 +4,11 @@
 
 ### Added
 
+- Structured Claude Code token coverage states distinguish checking, unlinked IDs, no eligible weekly logs, inaccessible folders and unverified ownership. Readable, attributable tokens remain visible as **partial** when selected sources have access or ownership gaps.
+- **Coverage…** in account details opens source-specific access and ownership explanations, exclusion counts and scan timing. Unknown logs are never attributed to the currently signed-in account; explanations clarify that ownership gaps across selected folders may concern another account.
+- Cache reads and cache writes are separate visible and accessible token fields alongside input/output. The compact detail layout keeps all four fields within the widget.
+- Cached transcript reuse rechecks file access. Missing projects folders, unavailable roots and partial file/subfolder failures are distinguished; permission recovery is retried on the next scan.
+
 - **Claude Code Log Sources…** in the menu bar, widget title menu and dashboard account menus. A native folder picker adds readable configuration roots containing `projects` or `.claude.json`; the primary source remains enabled and additional selections persist across restarts. Removing a source leaves its files untouched.
 - Per-account source contribution labels and scan times. Directory changes clear previous totals and trigger an immediate or queued scan; the same roots participate in scheduled/wake scans and guided ID discovery.
 - Cross-directory session/request deduplication with whole winning-snapshot token breakdowns and source attribution. Canonical paths collapse symlink aliases. Conflicting account-ID email claims and conflicting session ownership across copies are excluded. Authentication remains unchanged.
@@ -46,6 +51,9 @@
 - Confirmed offline state or a failed credential-free connection probe is classified as a network error. An inconclusive timeout remains unavailable.
 
 ### Verification
+
+- Verified live dashboard coverage states, partial token totals, the source explanation sheet, and the four-field cache breakdown in the installed widget without clipping.
+- Synthetic scanner/store fixtures cover checking, missing IDs, no eligible logs, missing/empty folders, unreadable folders and cached files, permission recovery, missing/unknown/conflicting ownership, partial-count retention, explicit cache totals and duplicate-account ambiguity. Existing multiple-configuration and guided-linking store regressions pass. Universal arm64/x86_64 build and signature checks passed.
 
 - Verified the installed native folder picker, temporary source addition, live primary-source contribution and empty-source labels, then removed the verification source.
 - Synthetic scanner fixtures cover copied sessions, independent sessions sharing request IDs, larger snapshots, exact source attribution, aliases, selection validation, metadata conflicts, conflicting owners, warm-cache changes, source removal and unavailable roots. Store fixtures verify duplicate additions, persistence/relaunch, pinned primary, forced rescans, contribution tracking and unchanged authentication metadata. Existing guided-linking fixtures pass. Universal arm64/x86_64 build and signature checks passed.

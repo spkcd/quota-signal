@@ -4,6 +4,7 @@ enum ClaudeCodeLinking {
     struct Discovery: Sendable {
         let identities: [UUID: String]
         let conflictingIDs: Set<UUID>
+        var conflictingEmails = Set<String>()
         func matching(_ email: String) -> [UUID] {
             identities.filter { $0.value == email.lowercased() }.keys.sorted { $0.uuidString < $1.uuidString }
         }
@@ -30,20 +31,24 @@ enum ClaudeCodeLinking {
             owners[account.accountUuid, default: []].insert(email)
         }
         return Discovery(identities: owners.compactMapValues { $0.count == 1 ? $0.first : nil },
-                         conflictingIDs: Set(owners.filter { $0.value.count != 1 }.keys))
+                         conflictingIDs: Set(owners.filter { $0.value.count != 1 }.keys),
+                         conflictingEmails: Set(owners.filter { $0.value.count != 1 }.values.flatMap { $0 }))
     }
 
     static func discover(configs: [URL]) -> Discovery {
         var owners: [UUID: Set<String>] = [:]
         var conflicts = Set<UUID>()
+        var conflictingEmails = Set<String>()
         for root in ClaudeCodeConfigurations.unique(configs) {
             let found = discover(config: root)
             conflicts.formUnion(found.conflictingIDs)
+            conflictingEmails.formUnion(found.conflictingEmails)
             for (id, email) in found.identities { owners[id, default: []].insert(email) }
         }
         conflicts.formUnion(owners.filter { $0.value.count > 1 }.keys)
+        conflictingEmails.formUnion(owners.filter { conflicts.contains($0.key) }.values.flatMap { $0 })
         return Discovery(identities: owners.compactMapValues { $0.count == 1 ? $0.first : nil }.filter { !conflicts.contains($0.key) },
-                         conflictingIDs: conflicts)
+                         conflictingIDs: conflicts, conflictingEmails: conflictingEmails)
     }
 
     static func loginCommand(email: String, executable: URL) -> String {

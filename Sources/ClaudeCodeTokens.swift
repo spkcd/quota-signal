@@ -119,6 +119,7 @@ actor ClaudeCodeTokens {
     private struct Transcript {
         let session: String
         var ambiguousOwner = false
+        var unreadable = false
         let modified: Date
         let size: Int
         let owner: UUID?
@@ -133,6 +134,7 @@ actor ClaudeCodeTokens {
         let totals: [UUID: Counts]
         let contributingDirectories: [UUID: Set<URL>]
         let scannedDirectories: Set<URL>
+        var coverage = TokenCoverage()
     }
 
     func totals(for queries: [Query], knownEmails: [UUID: String]) -> [UUID: Counts] {
@@ -141,30 +143,51 @@ actor ClaudeCodeTokens {
 
     func scan(for queries: [Query], knownEmails: [UUID: String], directories: [URL]) -> ScanResult {
         let requested = Set(queries.map(\.email))
-        guard knownEmails.values.contains(where: requested.contains),
-              let earliest = queries.map({ $0.reset.addingTimeInterval(-Reading.week) }).min() else {
+        guard let earliest = queries.map({ $0.reset.addingTimeInterval(-Reading.week) }).min() else {
             return ScanResult(totals: [:], contributingDirectories: [:], scannedDirectories: [])
         }
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
         var transcripts: [(Transcript, URL)] = []
         var seen = Set<URL>()
         var scanned = Set<URL>()
+        var coverage = TokenCoverage()
         for root in ClaudeCodeConfigurations.unique(directories) {
             let projects = root.appending(path: "projects")
+            let manager = FileManager.default
+            var isDirectory: ObjCBool = false
+            guard manager.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue,
+                  manager.isReadableFile(atPath: root.path) else {
+                coverage.directories[root] = .init(access: .unavailable)
+                continue
+            }
+            guard manager.fileExists(atPath: projects.path) else {
+                coverage.directories[root] = .init(access: .noProjects)
+                continue
+            }
             var failed = false
-            guard FileManager.default.isReadableFile(atPath: projects.path),
+            guard manager.isReadableFile(atPath: projects.path),
                   let files = FileManager.default.enumerator(at: projects, includingPropertiesForKeys: Array(keys),
-                    options: [.skipsHiddenFiles, .skipsPackageDescendants], errorHandler: { _, _ in failed = true; return true }) else { continue }
+                    options: [.skipsHiddenFiles, .skipsPackageDescendants], errorHandler: { _, _ in failed = true; return true }) else {
+                coverage.directories[root] = .init(access: .unavailable)
+                continue
+            }
             for case let entry as URL in files {
                 let file = ClaudeCodeConfigurations.canonical(entry)
-                guard file.pathExtension == "jsonl", let values = try? file.resourceValues(forKeys: keys),
-                      values.isRegularFile == true, let date = values.contentModificationDate,
-                      date >= earliest, let size = values.fileSize, seen.insert(file).inserted else { continue }
+                guard file.pathExtension == "jsonl" else { continue }
+                guard let values = try? file.resourceValues(forKeys: keys), let date = values.contentModificationDate,
+                      let size = values.fileSize else { failed = true; continue }
+                guard values.isRegularFile == true, date >= earliest, seen.insert(file).inserted else { continue }
+                guard manager.isReadableFile(atPath: file.path) else { failed = true; cache.removeValue(forKey: file); continue }
                 let transcript: Transcript
                 if let cached = cache[file], cached.modified == date, cached.size == size { transcript = cached }
-                else { transcript = read(file, modified: date, size: size); cache[file] = transcript }
+                else {
+                    transcript = read(file, modified: date, size: size)
+                    if !transcript.unreadable { cache[file] = transcript }
+                }
+                if transcript.unreadable { failed = true; continue }
                 transcripts.append((transcript, root))
             }
+            coverage.directories[root] = .init(access: failed ? .partial : .scanned)
             if !failed { scanned.insert(root) }
         }
         cache = cache.filter { seen.contains($0.key) }
@@ -176,6 +199,12 @@ actor ClaudeCodeTokens {
             }
         }
         let ambiguousSessions = Set(transcripts.filter { $0.0.ambiguousOwner }.map { $0.0.session })
+        for (transcript, root) in transcripts {
+            if transcript.owner == nil || transcript.owner.flatMap({ knownEmails[$0] }) == nil ||
+                owners[transcript.session, default: []].count > 1 || ambiguousSessions.contains(transcript.session) {
+                coverage.directories[root, default: .init()].unverifiedLogs += 1
+            }
+        }
         var byEmail: [String: [String: Sample]] = [:]
         for (transcript, root) in transcripts {
             guard let owner = transcript.owner, let email = knownEmails[owner], requested.contains(email) else { continue }
@@ -198,7 +227,7 @@ actor ClaudeCodeTokens {
             totals[query.id] = records.reduce(into: Counts()) { $0.add($1.counts) }
             contributors[query.id] = Set(records.map(\.directory))
         }
-        return ScanResult(totals: totals, contributingDirectories: contributors, scannedDirectories: scanned)
+        return ScanResult(totals: totals, contributingDirectories: contributors, scannedDirectories: scanned, coverage: coverage)
     }
 
     static func localIdentities(config: URL? = nil) -> [UUID: String] {
@@ -207,7 +236,11 @@ actor ClaudeCodeTokens {
 
     private func read(_ file: URL, modified: Date, size: Int) -> Transcript {
         let empty = Transcript(session: file.deletingPathExtension().lastPathComponent, modified: modified, size: size, owner: nil, samples: [])
-        guard let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { return empty }
+        guard let data = try? Data(contentsOf: file, options: .mappedIfSafe) else {
+            var failed = empty
+            failed.unreadable = true
+            return failed
+        }
         let decoder = JSONDecoder()
         let fractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
         let wholeSeconds = Date.ISO8601FormatStyle()

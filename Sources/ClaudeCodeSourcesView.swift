@@ -12,7 +12,10 @@ struct ClaudeCodeSourcesView: View {
             Text("Choose configuration folders containing projects or .claude.json. These sources apply to all accounts and are read locally. Your active Claude Code login is unchanged.")
                 .foregroundStyle(Instrument.muted).fixedSize(horizontal: false, vertical: true)
             if let account = store.current {
-                Text("Contributions for \(account.webIdentity?.email ?? account.name)").font(.headline)
+                Text("Coverage for \(account.webIdentity?.email ?? account.name)").font(.headline)
+                Text(store.localTokenStatus(for: account).label).fontWeight(.semibold)
+                Text(store.tokenCoverageExplanation(for: account)).font(.system(size: 12))
+                    .foregroundStyle(Instrument.muted).fixedSize(horizontal: false, vertical: true)
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
@@ -46,11 +49,14 @@ struct ClaudeCodeSourcesView: View {
     }
 
     private func status(_ url: URL) -> String {
-        guard let date = store.localTokenScanCompletedAt else { return "Checking local logs…" }
+        guard !store.localTokenScanInProgress, let date = store.localTokenScanCompletedAt else { return "Checking local logs…" }
         let included = store.current.map { store.contributingTokenDirectories[$0.id]?.contains(url) == true } ?? false
         let state = included ? "Included in this account's total" : store.scannedTokenDirectories.contains(url)
             ? "No unique requests included for this account" : "Not fully scanned or unavailable"
-        return state + " · Checked " + date.formatted(date: .omitted, time: .standard)
+        let coverage = store.localTokenCoverage.directories[url]
+        let access = coverage?.access.label ?? "Not considered by this scan"
+        let ownership = (coverage?.unverifiedLogs ?? 0) > 0 ? " · Logs with unverified ownership: \(coverage!.unverifiedLogs)" : ""
+        return access + " · " + state + ownership + " · Checked " + date.formatted(date: .omitted, time: .standard)
     }
 
     private func add() {

@@ -61,6 +61,7 @@ struct MultipleConfigurationsTests {
         try metadata(b, owner, "other@example.com")
         let disputed = ClaudeCodeLinking.discover(configs: [a,b])
         precondition(disputed.conflictingIDs.contains(owner) && disputed.identities[owner] == nil)
+        precondition(disputed.conflictingEmails == ["first@example.com", "other@example.com"])
         let missing = await scanner.scan(for: queries, knownEmails: identities.identities, directories: [base.appending(path: "missing")])
         precondition(missing.totals.isEmpty && missing.scannedDirectories.isEmpty)
         print("Multiple configurations passed selection validation, symlink deduplication, persistence, identity merging/conflicts, copied sessions, independent requests, winning-snapshot source attribution, warm-cache updates, removal and unavailable roots.")
