@@ -4,6 +4,10 @@
 
 ### Added
 
+- **Link Claude Code…** from account details and dashboard context menus. The guide explains the selected email, shows matching local account IDs, verifies metadata again before saving and requests a token rescan immediately or after an existing scan completes.
+- Email-specific sign-in instructions with a safely quoted command for the installed CLI and an Open Terminal action. Login is never run automatically; checking/linking leaves active Claude Code authentication unchanged. The guide explains that running the command can change the active CLI account.
+- Shared ID discovery excludes conflicting email claims and respects an explicitly supplied configuration directory. Forced token scans requested during another scan are queued instead of discarded.
+
 - **Export Support Diagnostics…** in the menu bar and the widget title context menu. A native save dialog writes a local JSON report; nothing is uploaded. Reports use anonymous account labels and report-local attempt numbers, excluding emails, workspace/profile names, paths, credentials, raw errors and transcript text through a fixed field allowlist.
 - Reports include app/build and bundled/reported companion versions, macOS version, Chrome running state, refresh timestamps, elapsed seconds, last-success times and error codes. Companion 1.6.0 reports its version with attempts and readings; older companions remain compatible with version coverage left unknown.
 - A persisted, bounded journal retains the latest 50 structured state transitions per account/source using the existing source lock. Late replies do not add false transitions. Missing or unreadable history is explicitly marked, and readable latest status remains available. History starts after this update.
@@ -38,6 +42,9 @@
 - Confirmed offline state or a failed credential-free connection probe is classified as a network error. An inconclusive timeout remains unavailable.
 
 ### Verification
+
+- Verified live ID discovery/linking for the dev account and observed refreshed Claude Code token totals. Its active Claude Code configuration remained byte-for-byte unchanged. The interactive login command was checked against installed CLI help; no live login switch was performed.
+- Isolated fixtures cover current/backups discovery, selected-email matching, missing/conflicting IDs, malformed metadata, shell quoting, changed-ID rejection, verified persistence and immediate/queued token scanning with synthetic logs. Universal macOS build and signature checks passed.
 
 - Verified the installed native export/save flow and inspected a redacted JSON report covering all four connected accounts. Confirmed app/build and bundled companion versions, anonymous source snapshots and absence of real account identifiers.
 - Diagnostics fixtures cover deliberately sensitive raw text and invalid version strings, anonymous labels, attempt correlation, elapsed times, error codes, last-success retention, out-of-order events, bounded history, empty accounts and damaged journals. Existing refresh-status and Chrome worker regressions pass. Universal arm64/x86_64 build and signature checks passed.

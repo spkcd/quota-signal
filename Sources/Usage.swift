@@ -150,6 +150,7 @@ final class UsageStore: ObservableObject {
     private var tokenQueries: [ClaudeCodeTokens.Query] = []
     private var tokenTask: Task<Void, Never>?
     private var lastTokenScan = Date.distantPast
+    private var tokenRescanRequested = false
     private var savedSelection: UUID?
     private var savedAccounts: [Account] = []
 
@@ -322,7 +323,8 @@ final class UsageStore: ObservableObject {
     }
 
     func refreshLocalTokens(force: Bool = false) {
-        guard !demo, tokenTask == nil else { return }
+        guard !demo else { return }
+        guard tokenTask == nil else { tokenRescanRequested = tokenRescanRequested || force; return }
         let candidates = accounts.compactMap { account -> ClaudeCodeTokens.Query? in
             let email = tokenEmail(for: account)
             guard email.contains("@"), let reset = account.latest?.reset, reset > .now else { return nil }
@@ -338,14 +340,21 @@ final class UsageStore: ObservableObject {
             tokenQueries = queries
         }
         tokenTask = Task {
-            defer { tokenTask = nil }
+            defer {
+                tokenTask = nil
+                if tokenRescanRequested {
+                    tokenRescanRequested = false
+                    refreshLocalTokens(force: true)
+                }
+            }
             let saved = defaults.dictionary(forKey: "claudeCodeLogIdentities") as? [String: String] ?? [:]
             var identities = [UUID: String]()
             for (id, email) in saved {
                 if let uuid = UUID(uuidString: id) { identities[uuid] = email.lowercased() }
             }
-            let current = await Task.detached { ClaudeCodeTokens.localIdentities() }.value
-            identities.merge(current) { _, newer in newer }
+            let discovery = await Task.detached { ClaudeCodeLinking.discover() }.value
+            identities = identities.filter { !discovery.conflictingIDs.contains($0.key) }
+            identities.merge(discovery.identities) { _, newer in newer }
             defaults.set(Dictionary(uniqueKeysWithValues: identities.map { ($0.key.uuidString, $0.value) }),
                          forKey: "claudeCodeLogIdentities")
             let totals = await claudeCodeTokens.totals(for: queries, knownEmails: identities)
@@ -353,6 +362,20 @@ final class UsageStore: ObservableObject {
             linkedTokenEmails = Set(identities.values)
             localTokenScanCompletedAt = .now
         }
+    }
+
+    func linkClaudeCode(for account: Account, expectedIDs: [UUID]) async -> Bool {
+        guard !demo, accounts.contains(where: { $0.id == account.id && tokenEmail(for: $0) == tokenEmail(for: account) }) else { return false }
+        let discovery = await Task.detached { ClaudeCodeLinking.discover() }.value
+        let ids = discovery.matching(tokenEmail(for: account))
+        guard !ids.isEmpty, ids == expectedIDs,
+              accounts.contains(where: { $0.id == account.id && tokenEmail(for: $0) == tokenEmail(for: account) }) else { return false }
+        var saved = defaults.dictionary(forKey: "claudeCodeLogIdentities") as? [String: String] ?? [:]
+        for id in discovery.conflictingIDs { saved.removeValue(forKey: id.uuidString) }
+        for id in ids { saved[id.uuidString] = tokenEmail(for: account) }
+        defaults.set(saved, forKey: "claudeCodeLogIdentities")
+        refreshLocalTokens(force: true)
+        return true
     }
 
     private func persist() {

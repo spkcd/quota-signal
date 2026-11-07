@@ -122,3 +122,28 @@ xcrun swiftc -swift-version 6 Sources/RefreshStatus.swift Sources/SupportDiagnos
 QUOTA_SIGNAL_TEST_DIRECTORY="$fixture/state" "$fixture/diagnostics"
 node Tests/refresh-worker.test.mjs
 ```
+
+## Link a Claude Code account ID
+
+Open an account's details and choose **Link Claude Code…** in the footer. You can also right-click a dashboard account and choose the same action. The guide shows the selected sign-in email and IDs discovered in local Claude Code account metadata and its backups. For a manual account, use its Claude sign-in email as the account name or connect it through Chrome first.
+
+If matching IDs are found, review them and choose **Link verified IDs**. Quota Signal rereads the metadata and confirms that the discovered IDs still match the selected email before saving the mapping. Conflicting email claims for the same ID are excluded. A successful link requests an immediate local token scan, queued immediately after any scan already running. A linked ID can still have no eligible logs in the current weekly window, or need a current quota/reset reading before tokens can be shown. Linking an ID does not generate or import missing transcripts.
+
+If no ID is found:
+
+1. Choose **Copy sign-in command**, then **Open Terminal**.
+2. Review and run the command. It uses the installed CLI's documented `claude auth login --claudeai --email 'selected@example.com'` flow. The email is a login hint, not proof of identity. Sign in with the exact email shown in the guide.
+3. Return to the guide and choose **Check again**, then review and link the discovered IDs.
+
+Checking metadata, preparing a command and linking IDs never run login/logout or rewrite Claude Code authentication. Running the copied login command is your explicit choice and can replace your active Claude Code login. Restore the desired CLI account afterward if needed. The command explicitly targets the same `CLAUDE_CONFIG_DIR` override used by the app, or clears a Terminal-only override when the app uses the default directory. No authentication tokens are read or copied by this guide.
+
+Verification covers the live existing-ID/link/rescan path and synthetic missing/conflicting/changed-ID cases. The interactive login command was checked against the installed CLI help; a live account switch was not performed during verification.
+
+Run the isolated metadata tests without real accounts:
+
+```sh
+xcrun swiftc -swift-version 6 Sources/ClaudeCodeLinking.swift Tests/ClaudeCodeLinkingTests.swift -o /tmp/quota-link-tests
+/tmp/quota-link-tests
+```
+
+`Tests/ClaudeCodeLinkStoreTests.swift` additionally exercises verified persistence and immediate/queued scans against synthetic logs. Compile it with all `Sources/*.swift` except `Sources/QuotaSignal.swift`, then run the standalone test executable with `CLAUDE_CONFIG_DIR` set to an empty temporary directory. Its UserDefaults domain is separate from the installed app.

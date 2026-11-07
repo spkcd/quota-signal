@@ -100,6 +100,7 @@ struct PanelView: View {
     var addAccount: () -> Void
     var accountAction: (Account, Bool) -> Void
     @ViewState private var editor: Account?
+    @ViewState private var linkingAccount: Account?
     @ViewState private var showingRefreshDetails = false
 
     var body: some View {
@@ -126,6 +127,9 @@ struct PanelView: View {
         .preferredColorScheme(.dark)
         .sheet(item: $editor) { account in
             AccountEditor(store: store, original: account)
+        }
+        .sheet(item: $linkingAccount) { account in
+            ClaudeCodeLinkView(store: store, account: account)
         }
         .onChange(of: store.demo) { store.showingDetail = false }
         .onChange(of: store.accounts.map(\.id)) { _, accountIDs in
@@ -274,6 +278,8 @@ struct PanelView: View {
         .help(latest.map { "Last updated " + $0.observed.formatted(date: .abbreviated, time: .shortened) }
               ?? row.freshness)
         .contextMenu {
+            Button("Link Claude Code…") { linkingAccount = account }
+                .disabled(store.demo)
             Button("Retry account") { accountAction(account, false) }
                 .disabled(store.demo || account.webIdentity == nil)
             Button("Reconnect in Chrome…") { accountAction(account, true) }
@@ -384,6 +390,10 @@ struct PanelView: View {
             .accessibilityLabel("Refresh details. " + refresh.title)
             .help(refreshDescription(refresh))
             Spacer()
+            if !store.demo {
+                Button("Link Claude Code…") { linkingAccount = account }
+                    .buttonStyle(.borderless)
+            }
             Link(destination: Instrument.settings) {
                 HStack(spacing: 4) {
                     Text("Claude Usage")

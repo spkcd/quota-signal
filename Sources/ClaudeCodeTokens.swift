@@ -35,6 +35,18 @@ actor ClaudeCodeTokens {
         return status.email?.lowercased()
     }
 
+    static func executableURL() -> URL? {
+        let files = FileManager.default
+        let home = files.homeDirectoryForCurrentUser.path
+        // Finder and login items may launch with a minimal PATH.
+        let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        let directories = path.split(separator: ":").map(String.init)
+            + ["\(home)/.local/bin", "\(home)/.claude/local", "/opt/homebrew/bin", "/usr/local/bin"]
+        return directories.map({ URL(fileURLWithPath: $0).appending(path: "claude") })
+            .first(where: { files.isExecutableFile(atPath: $0.path) })
+
+    }
+
     struct Counts: Sendable {
         var input: Int64 = 0
         var output: Int64 = 0
@@ -162,21 +174,7 @@ actor ClaudeCodeTokens {
     }
 
     static func localIdentities(config: URL? = nil) -> [UUID: String] {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let override = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"].map {
-            URL(fileURLWithPath: $0, isDirectory: true)
-        }
-        let directory = config ?? override ?? home.appending(path: ".claude", directoryHint: .isDirectory)
-        let backups = (try? FileManager.default.contentsOfDirectory(at: directory.appending(path: "backups"),
-                                                                   includingPropertiesForKeys: nil)) ?? []
-        let current = override == nil ? home.appending(path: ".claude.json") : directory.appending(path: ".claude.json")
-        var identities: [UUID: String] = [:]
-        for file in backups.filter({ $0.lastPathComponent.hasPrefix(".claude.json") }) + [current] {
-            guard let data = try? Data(contentsOf: file),
-                  let account = try? JSONDecoder().decode(AccountFile.self, from: data).oauthAccount else { continue }
-            identities[account.accountUuid] = account.emailAddress.lowercased()
-        }
-        return identities
+        ClaudeCodeLinking.discover(config: config).identities
     }
 
     private func read(_ file: URL, modified: Date, size: Int) -> Transcript {
