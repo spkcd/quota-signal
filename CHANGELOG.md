@@ -4,6 +4,11 @@
 
 ### Added
 
+- A compact, bounded in-memory Claude Code request index. Streaming snapshots keep the earliest eligible request time and complete winning token breakdown; unchanged transcripts are not reread. Removed/changed files are evicted before replacements are retained. Source, identity and weekly-window changes invalidate the index.
+- Chunked transcript reads, per-file temporary-allocation release and reuse of prefetched filesystem attributes. Only symlink entries require path resolution. Background extraction runs at utility priority.
+- Cooperative scan budgets for visited entries, changed bytes, per-file/record sizes, indexed requests and elapsed time. Limit hits are explicitly partial, and later scans reuse completed index entries. Limited or concurrently changed transcripts cannot contribute an unverified owner or stale cached count.
+- Scan timing/read-attempt information in Log Sources, plus a repeatable synthetic benchmark tracking cold/warm duration and process peak resident memory.
+
 - Structured Claude Code token coverage states distinguish checking, unlinked IDs, no eligible weekly logs, inaccessible folders and unverified ownership. Readable, attributable tokens remain visible as **partial** when selected sources have access or ownership gaps.
 - **Coverage…** in account details opens source-specific access and ownership explanations, exclusion counts and scan timing. Unknown logs are never attributed to the currently signed-in account; explanations clarify that ownership gaps across selected folders may concern another account.
 - Cache reads and cache writes are separate visible and accessible token fields alongside input/output. The compact detail layout keeps all four fields within the widget.
@@ -51,6 +56,9 @@
 - Confirmed offline state or a failed credential-free connection probe is classified as a network error. An inconclusive timeout remains unavailable.
 
 ### Verification
+
+- On an invented 114 MB fixture with 50,000 snapshots, median warm scan time improved from 20.83 to 6.41 ms and process peak RSS from 46.1 to 26.0 MB. Cold time was approximately unchanged; every pass retained the exact 1,380,000-token result. Warm passes performed zero transcript reads and retained 10,000 compact request entries. Measurements are local arm64 observations across three fresh processes, not cross-machine guarantees; full method/results are in `Tests/Benchmarks`.
+- Performance fixtures cover changed-file-only indexing, root/identity/window invalidation, deletion, deferred changed-file cache eviction, late conflicting ownership, budget continuation and entry/byte/file/line/index/time caps. Coverage, permission, multi-source and guided-linking regressions pass. Verified installed scan timing/partial-limit UI, universal arm64/x86_64 builds and signatures.
 
 - Verified live dashboard coverage states, partial token totals, the source explanation sheet, and the four-field cache breakdown in the installed widget without clipping.
 - Synthetic scanner/store fixtures cover checking, missing IDs, no eligible logs, missing/empty folders, unreadable folders and cached files, permission recovery, missing/unknown/conflicting ownership, partial-count retention, explicit cache totals and duplicate-account ambiguity. Existing multiple-configuration and guided-linking store regressions pass. Universal arm64/x86_64 build and signature checks passed.

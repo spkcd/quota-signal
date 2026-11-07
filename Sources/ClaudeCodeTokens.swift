@@ -120,6 +120,7 @@ actor ClaudeCodeTokens {
         let session: String
         var ambiguousOwner = false
         var unreadable = false
+        var limited = false
         let modified: Date
         let size: Int
         let owner: UUID?
@@ -127,6 +128,38 @@ actor ClaudeCodeTokens {
     }
 
     private var cache: [URL: Transcript] = [:]
+    struct Limits: Sendable {
+        var maxEntries = 50_000
+        var maxBytesRead = 2 * 1024 * 1024 * 1024
+        var maxFileBytes = 512 * 1024 * 1024
+        var maxIndexedRequests = 250_000
+        var maxLineBytes = 4 * 1024 * 1024
+        var maxSeconds: Double = 15
+    }
+
+    struct Metrics: Sendable {
+        var elapsedSeconds: Double = 0
+        var entriesVisited = 0
+        var filesParsed = 0
+        var cacheHits = 0
+        var bytesRead = 0
+        var indexedRequests = 0
+    }
+
+    private struct Configuration: Equatable {
+        let directories: [URL]
+        let identities: [UUID: String]
+        let earliest: Date
+    }
+    private var configuration: Configuration?
+
+    private struct FileEntry {
+        let file: URL
+        let root: URL
+        let modified: Date
+        let size: Int
+    }
+
     private let usageMarker = Data(#""usage":"#.utf8)
     private let ownerMarker = Data(#""ownerAccountUuid":"#.utf8)
 
@@ -135,23 +168,36 @@ actor ClaudeCodeTokens {
         let contributingDirectories: [UUID: Set<URL>]
         let scannedDirectories: Set<URL>
         var coverage = TokenCoverage()
+        var metrics = Metrics()
     }
 
     func totals(for queries: [Query], knownEmails: [UUID: String]) -> [UUID: Counts] {
         scan(for: queries, knownEmails: knownEmails, directories: [ClaudeCodeConfigurations.primary]).totals
     }
 
-    func scan(for queries: [Query], knownEmails: [UUID: String], directories: [URL]) -> ScanResult {
+    func scan(for queries: [Query], knownEmails: [UUID: String], directories: [URL], limits: Limits = Limits()) -> ScanResult {
+        let started = ProcessInfo.processInfo.systemUptime
+        let deadline = started + limits.maxSeconds
+        var metrics = Metrics()
+        let roots = ClaudeCodeConfigurations.unique(directories)
         let requested = Set(queries.map(\.email))
         guard let earliest = queries.map({ $0.reset.addingTimeInterval(-Reading.week) }).min() else {
             return ScanResult(totals: [:], contributingDirectories: [:], scannedDirectories: [])
         }
-        let keys: Set<URLResourceKey> = [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
+        let inputs = Configuration(directories: roots, identities: knownEmails, earliest: earliest)
+        if inputs != configuration { cache.removeAll(); configuration = inputs }
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey, .fileSizeKey]
         var transcripts: [(Transcript, URL)] = []
+        var inventory: [FileEntry] = []
         var seen = Set<URL>()
         var scanned = Set<URL>()
         var coverage = TokenCoverage()
-        for root in ClaudeCodeConfigurations.unique(directories) {
+        func stopped() -> Bool { Task.isCancelled || ProcessInfo.processInfo.systemUptime >= deadline }
+        for root in roots {
+            if stopped() || metrics.entriesVisited >= limits.maxEntries {
+                coverage.directories[root] = .init(access: .limited, limitReached: true)
+                continue
+            }
             let projects = root.appending(path: "projects")
             let manager = FileManager.default
             var isDirectory: ObjCBool = false
@@ -165,32 +211,76 @@ actor ClaudeCodeTokens {
                 continue
             }
             var failed = false
+            var limited = false
             guard manager.isReadableFile(atPath: projects.path),
-                  let files = FileManager.default.enumerator(at: projects, includingPropertiesForKeys: Array(keys),
+                  let files = manager.enumerator(at: projects, includingPropertiesForKeys: Array(keys),
                     options: [.skipsHiddenFiles, .skipsPackageDescendants], errorHandler: { _, _ in failed = true; return true }) else {
                 coverage.directories[root] = .init(access: .unavailable)
                 continue
             }
             for case let entry as URL in files {
-                let file = ClaudeCodeConfigurations.canonical(entry)
-                guard file.pathExtension == "jsonl" else { continue }
-                guard let values = try? file.resourceValues(forKeys: keys), let date = values.contentModificationDate,
-                      let size = values.fileSize else { failed = true; continue }
+                if stopped() || metrics.entriesVisited >= limits.maxEntries { limited = true; break }
+                metrics.entriesVisited += 1
+                guard entry.pathExtension == "jsonl" else { continue }
+                // Use the enumerator's prefetched attributes. Only symlinks need filesystem resolution.
+                guard var values = try? entry.resourceValues(forKeys: keys) else { failed = true; continue }
+                let file: URL
+                if values.isSymbolicLink == true {
+                    file = ClaudeCodeConfigurations.canonical(entry)
+                    guard let resolved = try? file.resourceValues(forKeys: keys) else { failed = true; continue }
+                    values = resolved
+                } else { file = URL(fileURLWithPath: entry.path, isDirectory: false) }
+                guard let date = values.contentModificationDate, let size = values.fileSize else { failed = true; continue }
                 guard values.isRegularFile == true, date >= earliest, seen.insert(file).inserted else { continue }
                 guard manager.isReadableFile(atPath: file.path) else { failed = true; cache.removeValue(forKey: file); continue }
-                let transcript: Transcript
-                if let cached = cache[file], cached.modified == date, cached.size == size { transcript = cached }
-                else {
-                    transcript = read(file, modified: date, size: size)
-                    if !transcript.unreadable { cache[file] = transcript }
-                }
-                if transcript.unreadable { failed = true; continue }
-                transcripts.append((transcript, root))
+                inventory.append(FileEntry(file: file, root: root, modified: date, size: size))
             }
-            coverage.directories[root] = .init(access: failed ? .partial : .scanned)
-            if !failed { scanned.insert(root) }
+            coverage.directories[root] = .init(access: failed ? .partial : limited ? .limited : .scanned, limitReached: limited)
+            if !failed && !limited { scanned.insert(root) }
         }
-        cache = cache.filter { seen.contains($0.key) }
+        // Evict removed/changed files before retaining any new index entries.
+        let current = Dictionary(uniqueKeysWithValues: inventory.map { ($0.file, $0) })
+        cache = cache.filter { file, transcript in
+            guard let entry = current[file] else { return false }
+            return entry.modified == transcript.modified && entry.size == transcript.size
+        }
+        var indexed = cache.values.reduce(0) { $0 + $1.samples.count }
+        if indexed > limits.maxIndexedRequests { cache.removeAll(); indexed = 0 }
+        for entry in inventory {
+            let transcript: Transcript
+            if let cached = cache[entry.file] {
+                transcript = cached
+                metrics.cacheHits += 1
+            } else {
+                guard !stopped(), entry.size <= limits.maxFileBytes,
+                      entry.size <= limits.maxBytesRead - metrics.bytesRead else {
+                    if coverage.directories[entry.root]?.access != .partial { coverage.directories[entry.root]?.access = .limited }
+                    coverage.directories[entry.root]?.limitReached = true
+                    scanned.remove(entry.root)
+                    continue
+                }
+                let result = autoreleasepool {
+                    read(entry.file, modified: entry.modified, size: entry.size,
+                         limits: limits, capacity: limits.maxIndexedRequests - indexed, deadline: deadline, earliest: earliest)
+                }
+                transcript = result.0
+                metrics.filesParsed += 1
+                metrics.bytesRead += result.1
+                if !transcript.unreadable && !transcript.limited {
+                    cache[entry.file] = transcript
+                    indexed += transcript.samples.count
+                }
+            }
+            if transcript.unreadable || transcript.limited {
+                if transcript.limited {
+                    if coverage.directories[entry.root]?.access != .partial { coverage.directories[entry.root]?.access = .limited }
+                    coverage.directories[entry.root]?.limitReached = true
+                } else { coverage.directories[entry.root]?.access = .partial }
+                scanned.remove(entry.root)
+                continue
+            }
+            transcripts.append((transcript, entry.root))
+        }
         // The same session cannot belong to two owners in different configuration copies.
         var owners: [String: Set<UUID>] = [:]
         for (transcript, _) in transcripts {
@@ -227,20 +317,19 @@ actor ClaudeCodeTokens {
             totals[query.id] = records.reduce(into: Counts()) { $0.add($1.counts) }
             contributors[query.id] = Set(records.map(\.directory))
         }
-        return ScanResult(totals: totals, contributingDirectories: contributors, scannedDirectories: scanned, coverage: coverage)
+        metrics.elapsedSeconds = ProcessInfo.processInfo.systemUptime - started
+        metrics.indexedRequests = indexed
+        return ScanResult(totals: totals, contributingDirectories: contributors, scannedDirectories: scanned, coverage: coverage, metrics: metrics)
     }
 
     static func localIdentities(config: URL? = nil) -> [UUID: String] {
         ClaudeCodeLinking.discover(config: config).identities
     }
 
-    private func read(_ file: URL, modified: Date, size: Int) -> Transcript {
-        let empty = Transcript(session: file.deletingPathExtension().lastPathComponent, modified: modified, size: size, owner: nil, samples: [])
-        guard let data = try? Data(contentsOf: file, options: .mappedIfSafe) else {
-            var failed = empty
-            failed.unreadable = true
-            return failed
-        }
+    private func read(_ file: URL, modified: Date, size: Int, limits: Limits, capacity: Int, deadline: Double, earliest: Date) -> (Transcript, Int) {
+        var empty = Transcript(session: file.deletingPathExtension().lastPathComponent, modified: modified, size: size, owner: nil, samples: [])
+        guard let input = try? FileHandle(forReadingFrom: file) else { empty.unreadable = true; return (empty, 0) }
+        defer { try? input.close() }
         let decoder = JSONDecoder()
         let fractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
         let wholeSeconds = Date.ISO8601FormatStyle()
@@ -252,40 +341,51 @@ actor ClaudeCodeTokens {
             }
             return date
         }
-        let session = file.deletingPathExtension().lastPathComponent
-        var owners: Set<UUID> = []
-        for line in Self.lines(in: data, containing: ownerMarker) {
-            guard let event = try? decoder.decode(Event.self, from: line),
-                  event.type == "bridge-session", event.sessionId == session, let owner = event.ownerAccountUuid else { continue }
-            owners.insert(owner)
-        }
-        guard owners.count == 1, let owner = owners.first else {
-            var rejected = empty
-            rejected.ambiguousOwner = owners.count > 1
-            return rejected
-        }
-        var samples: [Sample] = []
-        for line in Self.lines(in: data, containing: usageMarker) {
-            guard let event = try? decoder.decode(Event.self, from: line),
-                  event.type == "assistant", event.sessionId == session, let time = event.timestamp,
-                  let counts = event.message?.usage?.counts, counts.total > 0,
-                  let request = event.requestId ?? event.message?.id, !request.isEmpty else { continue }
-            samples.append(Sample(directory: file.deletingLastPathComponent(), session: session, request: request, time: time, counts: counts))
-        }
-        return Transcript(session: session, modified: modified, size: size, owner: owner, samples: samples)
-    }
-
-    private static func lines(in data: Data, containing marker: Data) -> AnySequence<Data> {
-        AnySequence {
-            var position = data.startIndex
-            return AnyIterator<Data> {
-                guard position < data.endIndex,
-                      let match = data.range(of: marker, in: position..<data.endIndex) else { return nil }
-                let start = data[position..<match.lowerBound].lastIndex(of: 10).map { $0 + 1 } ?? position
-                guard let end = data[match.upperBound...].firstIndex(of: 10) else { return nil }
-                position = end + 1
-                return Data(data[start..<end])
+        let session = empty.session
+        var owners = Set<UUID>()
+        var requests: [String: Sample] = [:]
+        var pending = Data()
+        var bytes = 0
+        do {
+            while bytes < size {
+                if Task.isCancelled || ProcessInfo.processInfo.systemUptime >= deadline { empty.limited = true; return (empty, bytes) }
+                guard let chunk = try input.read(upToCount: min(256 * 1024, size - bytes)), !chunk.isEmpty else {
+                    empty.unreadable = true; return (empty, bytes)
+                }
+                bytes += chunk.count
+                pending.append(chunk)
+                var start = pending.startIndex
+                while let end = pending[start...].firstIndex(of: 10) {
+                    if end - start > limits.maxLineBytes { empty.limited = true; return (empty, bytes) }
+                    let line = pending[start..<end]
+                    if line.range(of: ownerMarker) != nil || line.range(of: usageMarker) != nil,
+                       let event = try? decoder.decode(Event.self, from: line), event.sessionId == session {
+                        if event.type == "bridge-session", let owner = event.ownerAccountUuid { owners.insert(owner) }
+                        if event.type == "assistant", let time = event.timestamp, time >= earliest, let counts = event.message?.usage?.counts, counts.total > 0,
+                           let request = event.requestId ?? event.message?.id, !request.isEmpty {
+                            if let prior = requests[request] {
+                                // Compact streaming snapshots without losing the earliest request time or winning breakdown.
+                                requests[request] = Sample(directory: prior.directory, session: session, request: request,
+                                    time: min(prior.time, time), counts: counts.total > prior.counts.total ? counts : prior.counts)
+                            } else {
+                                guard requests.count < capacity else { empty.limited = true; return (empty, bytes) }
+                                requests[request] = Sample(directory: file.deletingLastPathComponent(), session: session, request: request, time: time, counts: counts)
+                            }
+                        }
+                    }
+                    start = end + 1
+                }
+                pending = Data(pending[start...])
+                if pending.count > limits.maxLineBytes { empty.limited = true; return (empty, bytes) }
             }
+            // Only complete JSONL records are indexed. A concurrently changed file is retried later.
+            let fresh = try URL(fileURLWithPath: file.path).resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+            guard fresh.contentModificationDate == modified, fresh.fileSize == size else { empty.unreadable = true; return (empty, bytes) }
+        } catch { empty.unreadable = true; return (empty, bytes) }
+        guard owners.count == 1, let owner = owners.first else {
+            empty.ambiguousOwner = owners.count > 1
+            return (empty, bytes)
         }
+        return (Transcript(session: session, modified: modified, size: size, owner: owner, samples: Array(requests.values)), bytes)
     }
 }

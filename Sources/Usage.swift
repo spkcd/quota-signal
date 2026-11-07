@@ -118,7 +118,7 @@ enum Bridge {
 @MainActor
 final class UsageStore: ObservableObject {
     enum LocalTokenStatus {
-        case checking, needsID, awaitingCycle, ambiguous, noLogs, inaccessible, ownershipUnknown
+        case checking, needsID, awaitingCycle, ambiguous, noLogs, inaccessible, ownershipUnknown, scanLimited
         case recorded(ClaudeCodeTokens.Counts)
         case partial(ClaudeCodeTokens.Counts)
 
@@ -138,6 +138,7 @@ final class UsageStore: ObservableObject {
             case .partial: "Partial token coverage"
             case .inaccessible: "Log folders inaccessible"
             case .ownershipUnknown: "Log ownership unverified"
+            case .scanLimited: "Token scan limit reached"
             }
         }
     }
@@ -156,6 +157,7 @@ final class UsageStore: ObservableObject {
     @Published private(set) var scannedTokenDirectories = Set<URL>()
     @Published var showingLogSources = false
     @Published private(set) var localTokenCoverage = TokenCoverage()
+    @Published private(set) var localTokenScanMetrics: ClaudeCodeTokens.Metrics?
     @Published private(set) var localTokenScanInProgress = false
     private var conflictedTokenEmails = Set<String>()
 
@@ -340,6 +342,7 @@ final class UsageStore: ObservableObject {
         if let counts = localTokenTotals[account.id] {
             return localTokenCoverage.isPartial ? .partial(counts) : .recorded(counts)
         }
+        if localTokenCoverage.hasLimit { return .scanLimited }
         if localTokenCoverage.hasUnavailable { return .inaccessible }
         if localTokenCoverage.hasUnverifiedOwnership { return .ownershipUnknown }
         return .noLogs
@@ -398,10 +401,14 @@ final class UsageStore: ObservableObject {
             identities.merge(discovery.identities) { _, newer in newer }
             defaults.set(Dictionary(uniqueKeysWithValues: identities.map { ($0.key.uuidString, $0.value) }),
                          forKey: "claudeCodeLogIdentities")
-            let result = await claudeCodeTokens.scan(for: queries, knownEmails: identities, directories: directories)
+            let scanner = claudeCodeTokens
+            let result = await Task.detached(priority: .utility) { [identities] in
+                await scanner.scan(for: queries, knownEmails: identities, directories: directories)
+            }.value
             guard directories == localTokenDirectories else { tokenRescanRequested = true; return }
             conflictedTokenEmails = disputedEmails.union(discovery.conflictingEmails)
             localTokenCoverage = result.coverage
+            localTokenScanMetrics = result.metrics
             localTokenTotals = result.totals
             contributingTokenDirectories = result.contributingDirectories
             scannedTokenDirectories = result.scannedDirectories

@@ -191,3 +191,16 @@ xcrun swiftc -swift-version 6 Sources/TokenCoverage.swift Sources/ClaudeCodeConf
 ```
 
 `Tests/TokenCoverageStoreTests.swift` checks the user-facing state decisions through the real store. Compile it with all source files except `Sources/QuotaSignal.swift`, then run with `CLAUDE_CONFIG_DIR` set to an empty temporary directory. Tests use synthetic metadata/logs and restore temporary permission changes.
+
+
+## Scan performance and work limits
+
+The app keeps a compact request index in memory and reparses only changed transcripts. It still inventories enabled folders and rechecks access on each scan. Source selection, identity mappings and weekly-window changes invalidate the index; restarting the app starts cold. Local token refresh still runs about every five minutes, after wake recovery and when you request a rescan.
+
+Log Sources shows the last scan duration and number of transcript read attempts. Warm scans can read no transcript bytes while still checking files and recalculating totals. The index stores request metadata/counts, not conversation content, and is not written to disk.
+
+Extraction runs at utility priority with cooperative limits: 50,000 visited entries, 2 GiB of changed transcript reads per pass, 512 MiB per file, 250,000 indexed requests, 4 MiB per JSONL record and 15 seconds before deferring further work. Blocking filesystem calls and final aggregation are not hard-preempted; identity metadata discovery is separate from these extraction limits. These bounds do not guarantee a fixed whole-app RSS.
+
+A limit shows **Token scan limit reached** or marks an available total **partial**, with the explanation in **Coverage…**. A later scheduled/manual scan reuses completed entries and may index more changed files. Persistent file/record/index/entry limits can require reducing enabled sources. Nothing is deleted or edited, and deferred changed files do not reuse outdated counts. Limited transcripts are excluded until their complete ownership metadata can be verified.
+
+For the repeatable sanitized benchmark, measurements and regression commands, see [Scan benchmarks](../Tests/Benchmarks/README.md) and [Measured results](../Tests/Benchmarks/RESULTS.md).

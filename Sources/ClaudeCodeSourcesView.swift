@@ -38,6 +38,10 @@ struct ClaudeCodeSourcesView: View {
             }.frame(height: 205)
             Text("Copied sessions count once. For equal copies, the first source supplies the count; a larger usage snapshot takes precedence. The source labels reflect those included requests.")
                 .font(.system(size: 12)).foregroundStyle(Instrument.muted).fixedSize(horizontal: false, vertical: true)
+            if let metrics = store.localTokenScanMetrics, !store.localTokenScanInProgress {
+                Text("Last scan: \(metrics.elapsedSeconds.formatted(.number.precision(.fractionLength(2)))) seconds · \(metrics.filesParsed) file read attempts")
+                    .font(.system(size: 12)).foregroundStyle(Instrument.muted)
+            }
             if let error { Text(error).font(.system(size: 12)).foregroundStyle(Instrument.warning) }
             HStack {
                 Button("Add folder…") { add() }.disabled(store.demo)
