@@ -76,6 +76,7 @@ final class WidgetController: NSObject, NSApplicationDelegate {
             ("Open Claude sign-in in Chrome", #selector(signInInChrome), ""),
             ("Sign in with email for Chrome-free refresh", #selector(signInForRefresh), ""),
             ("Refresh Claude usage now", #selector(refreshClaude), ""),
+            ("Claude Code Log Sources…", #selector(showLogSources), ""),
             ("Export Support Diagnostics…", #selector(exportDiagnostics), ""),
             ("Toggle demo data", #selector(toggleDemo), ""),
             ("Quit Quota Signal", #selector(quit), "q")
@@ -144,6 +145,11 @@ final class WidgetController: NSObject, NSApplicationDelegate {
         } catch {
             NSAlert(error: error).runModal()
         }
+    }
+
+    @objc private func showLogSources() {
+        showDashboard()
+        store.showingLogSources = true
     }
 
     @objc private func exportDiagnostics() {

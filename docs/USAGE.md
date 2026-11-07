@@ -142,8 +142,30 @@ Verification covers the live existing-ID/link/rescan path and synthetic missing/
 Run the isolated metadata tests without real accounts:
 
 ```sh
-xcrun swiftc -swift-version 6 Sources/ClaudeCodeLinking.swift Tests/ClaudeCodeLinkingTests.swift -o /tmp/quota-link-tests
+xcrun swiftc -swift-version 6 Sources/ClaudeCodeConfigurations.swift Sources/ClaudeCodeLinking.swift Tests/ClaudeCodeLinkingTests.swift -o /tmp/quota-link-tests
 /tmp/quota-link-tests
 ```
 
 `Tests/ClaudeCodeLinkStoreTests.swift` additionally exercises verified persistence and immediate/queued scans against synthetic logs. Compile it with all `Sources/*.swift` except `Sources/QuotaSignal.swift`, then run the standalone test executable with `CLAUDE_CONFIG_DIR` set to an empty temporary directory. Its UserDefaults domain is separate from the installed app.
+
+
+## Multiple Claude Code configurations
+
+Right-click the widget title or menu bar label and choose **Claude Code Log Sources…**. You can also right-click a dashboard account to view its source contributions. The window shows the current account's contributing directories and the last scan time. Folder selection applies to all accounts.
+
+The primary configuration stays enabled: `CLAUDE_CONFIG_DIR` when set for the app, otherwise `~/.claude`. Choose **Add folder…** and select one or more additional configuration roots containing a `projects` directory or `.claude.json`. Hidden folders are visible in the native picker. Select the configuration root, rather than its `projects` child. Cancel saves nothing; an invalid selection adds no folders. Additional folders can be removed without deleting their files. Folder paths persist across app restarts; this unsandboxed app uses normal filesystem permissions. If a folder moves or becomes inaccessible, reselect it.
+
+Selection changes clear the previous totals and request a new scan, queued after any scan already running. The same sources participate in five-minute scans, wake recovery and guided ID discovery. The copied sign-in command in the ID guide continues to target the primary configuration. Adding or scanning a directory never runs login/logout or copies credentials.
+
+Identity metadata is combined across enabled roots. Contradictory email claims for an ID are excluded, as are copies of a session that claim different owners. Requests are deduplicated by session and request identity across all enabled roots. Equal copies use the first source; a larger usage snapshot wins with its complete input/output/cache breakdown. Source labels show directories supplying the included snapshots, so a folder holding only duplicate or out-of-cycle records may have no contribution. An unreadable or incompletely enumerated folder is not shown as fully scanned.
+
+Only the existing supported Claude Code transcript format is counted. Selecting a directory does not make unowned or unsupported logs attributable. Local paths are visible in the source manager, but remain excluded from support diagnostics exports.
+
+Run the scanner fixtures without real accounts:
+
+```sh
+xcrun swiftc -swift-version 6 Sources/ClaudeCodeConfigurations.swift Sources/ClaudeCodeLinking.swift Sources/ClaudeCodeTokens.swift Tests/MultipleConfigurationsTests.swift -o /tmp/quota-config-tests
+/tmp/quota-config-tests
+```
+
+`Tests/MultipleConfigurationStoreTests.swift` verifies selection persistence, relaunch, source attribution and removal through the real store. Compile it with all source files except `Sources/QuotaSignal.swift`, then run with `CLAUDE_CONFIG_DIR` set to an empty temporary directory. The standalone test has a separate preferences domain.

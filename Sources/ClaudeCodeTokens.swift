@@ -109,12 +109,16 @@ actor ClaudeCodeTokens {
     }
 
     private struct Sample {
+        let directory: URL
+        let session: String
         let request: String
         let time: Date
         let counts: Counts
     }
 
     private struct Transcript {
+        let session: String
+        var ambiguousOwner = false
         let modified: Date
         let size: Int
         let owner: UUID?
@@ -125,52 +129,76 @@ actor ClaudeCodeTokens {
     private let usageMarker = Data(#""usage":"#.utf8)
     private let ownerMarker = Data(#""ownerAccountUuid":"#.utf8)
 
+    struct ScanResult: Sendable {
+        let totals: [UUID: Counts]
+        let contributingDirectories: [UUID: Set<URL>]
+        let scannedDirectories: Set<URL>
+    }
+
     func totals(for queries: [Query], knownEmails: [UUID: String]) -> [UUID: Counts] {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let config = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"].map {
-            URL(fileURLWithPath: $0, isDirectory: true)
-        } ?? home.appending(path: ".claude", directoryHint: .isDirectory)
+        scan(for: queries, knownEmails: knownEmails, directories: [ClaudeCodeConfigurations.primary]).totals
+    }
+
+    func scan(for queries: [Query], knownEmails: [UUID: String], directories: [URL]) -> ScanResult {
         let requested = Set(queries.map(\.email))
         guard knownEmails.values.contains(where: requested.contains),
-              let earliest = queries.map({ $0.reset.addingTimeInterval(-Reading.week) }).min() else { return [:] }
+              let earliest = queries.map({ $0.reset.addingTimeInterval(-Reading.week) }).min() else {
+            return ScanResult(totals: [:], contributingDirectories: [:], scannedDirectories: [])
+        }
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
-        guard let files = FileManager.default.enumerator(at: config.appending(path: "projects"),
-                                                         includingPropertiesForKeys: Array(keys),
-                                                         options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return [:] }
-        var byEmail: [String: [String: Sample]] = [:]
-        var seen: Set<URL> = []
-        for case let file as URL in files {
-            guard file.pathExtension == "jsonl", let values = try? file.resourceValues(forKeys: keys),
-                  values.isRegularFile == true, let date = values.contentModificationDate,
-                  date >= earliest, let size = values.fileSize else { continue }
-            seen.insert(file)
-            let transcript: Transcript
-            if let cached = cache[file], cached.modified == date, cached.size == size {
-                transcript = cached
-            } else {
-                transcript = read(file, modified: date, size: size)
-                cache[file] = transcript
+        var transcripts: [(Transcript, URL)] = []
+        var seen = Set<URL>()
+        var scanned = Set<URL>()
+        for root in ClaudeCodeConfigurations.unique(directories) {
+            let projects = root.appending(path: "projects")
+            var failed = false
+            guard FileManager.default.isReadableFile(atPath: projects.path),
+                  let files = FileManager.default.enumerator(at: projects, includingPropertiesForKeys: Array(keys),
+                    options: [.skipsHiddenFiles, .skipsPackageDescendants], errorHandler: { _, _ in failed = true; return true }) else { continue }
+            for case let entry as URL in files {
+                let file = ClaudeCodeConfigurations.canonical(entry)
+                guard file.pathExtension == "jsonl", let values = try? file.resourceValues(forKeys: keys),
+                      values.isRegularFile == true, let date = values.contentModificationDate,
+                      date >= earliest, let size = values.fileSize, seen.insert(file).inserted else { continue }
+                let transcript: Transcript
+                if let cached = cache[file], cached.modified == date, cached.size == size { transcript = cached }
+                else { transcript = read(file, modified: date, size: size); cache[file] = transcript }
+                transcripts.append((transcript, root))
             }
-            guard let owner = transcript.owner, let email = knownEmails[owner], requested.contains(email) else { continue }
-            for sample in transcript.samples where sample.time >= earliest {
-                if let prior = byEmail[email]?[sample.request] {
-                    // Keep the breakdown from the same snapshot as the winning total.
-                    let counts = sample.counts.total > prior.counts.total ? sample.counts : prior.counts
-                    byEmail[email]?[sample.request] = Sample(request: sample.request,
-                                                            time: min(prior.time, sample.time), counts: counts)
-                } else {
-                    byEmail[email, default: [:]][sample.request] = sample
-                }
-            }
+            if !failed { scanned.insert(root) }
         }
         cache = cache.filter { seen.contains($0.key) }
-        return Dictionary(uniqueKeysWithValues: queries.compactMap { query in
+        // The same session cannot belong to two owners in different configuration copies.
+        var owners: [String: Set<UUID>] = [:]
+        for (transcript, _) in transcripts {
+            if let owner = transcript.owner {
+                owners[transcript.session, default: []].insert(owner)
+            }
+        }
+        let ambiguousSessions = Set(transcripts.filter { $0.0.ambiguousOwner }.map { $0.0.session })
+        var byEmail: [String: [String: Sample]] = [:]
+        for (transcript, root) in transcripts {
+            guard let owner = transcript.owner, let email = knownEmails[owner], requested.contains(email) else { continue }
+            for item in transcript.samples where item.time >= earliest && owners[item.session]?.count == 1 && !ambiguousSessions.contains(item.session) {
+                let sample = Sample(directory: root, session: item.session, request: item.request, time: item.time, counts: item.counts)
+                let key = sample.session + ":" + sample.request
+                if let prior = byEmail[email]?[key] {
+                    let winner = sample.counts.total > prior.counts.total ? sample : prior
+                    byEmail[email]?[key] = Sample(directory: winner.directory, session: winner.session, request: winner.request,
+                                                 time: min(prior.time, sample.time), counts: winner.counts)
+                } else { byEmail[email, default: [:]][key] = sample }
+            }
+        }
+        var totals: [UUID: Counts] = [:]
+        var contributors: [UUID: Set<URL>] = [:]
+        for query in queries {
             let start = query.reset.addingTimeInterval(-Reading.week)
-            guard let records = byEmail[query.email]?.values else { return nil }
-            let inCycle = records.filter { $0.time >= start && $0.time < query.reset }
-            guard !inCycle.isEmpty else { return nil }
-            return (query.id, inCycle.reduce(into: Counts()) { $0.add($1.counts) })
-        })
+            let records = (byEmail[query.email] ?? [:]).values.filter { $0.time >= start && $0.time < query.reset }
+            guard !records.isEmpty else { continue }
+            totals[query.id] = records.reduce(into: Counts()) { $0.add($1.counts) }
+            contributors[query.id] = Set(records.map(\.directory))
+        }
+        return ScanResult(totals: totals, contributingDirectories: contributors, scannedDirectories: scanned)
     }
 
     static func localIdentities(config: URL? = nil) -> [UUID: String] {
@@ -178,7 +206,7 @@ actor ClaudeCodeTokens {
     }
 
     private func read(_ file: URL, modified: Date, size: Int) -> Transcript {
-        let empty = Transcript(modified: modified, size: size, owner: nil, samples: [])
+        let empty = Transcript(session: file.deletingPathExtension().lastPathComponent, modified: modified, size: size, owner: nil, samples: [])
         guard let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { return empty }
         let decoder = JSONDecoder()
         let fractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
@@ -198,16 +226,20 @@ actor ClaudeCodeTokens {
                   event.type == "bridge-session", event.sessionId == session, let owner = event.ownerAccountUuid else { continue }
             owners.insert(owner)
         }
-        guard owners.count == 1, let owner = owners.first else { return empty }
+        guard owners.count == 1, let owner = owners.first else {
+            var rejected = empty
+            rejected.ambiguousOwner = owners.count > 1
+            return rejected
+        }
         var samples: [Sample] = []
         for line in Self.lines(in: data, containing: usageMarker) {
             guard let event = try? decoder.decode(Event.self, from: line),
                   event.type == "assistant", event.sessionId == session, let time = event.timestamp,
                   let counts = event.message?.usage?.counts, counts.total > 0,
                   let request = event.requestId ?? event.message?.id, !request.isEmpty else { continue }
-            samples.append(Sample(request: request, time: time, counts: counts))
+            samples.append(Sample(directory: file.deletingLastPathComponent(), session: session, request: request, time: time, counts: counts))
         }
-        return Transcript(modified: modified, size: size, owner: owner, samples: samples)
+        return Transcript(session: session, modified: modified, size: size, owner: owner, samples: samples)
     }
 
     private static func lines(in data: Data, containing marker: Data) -> AnySequence<Data> {

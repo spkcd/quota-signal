@@ -18,7 +18,8 @@ enum ClaudeCodeLinking {
         let home = files.homeDirectoryForCurrentUser
         let override = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
         let directory = config ?? override ?? home.appending(path: ".claude", directoryHint: .isDirectory)
-        let current = config != nil || override != nil ? directory.appending(path: ".claude.json") : home.appending(path: ".claude.json")
+        let isDefault = override == nil && ClaudeCodeConfigurations.canonical(directory) == ClaudeCodeConfigurations.canonical(home.appending(path: ".claude"))
+        let current = isDefault ? home.appending(path: ".claude.json") : directory.appending(path: ".claude.json")
         let backups = (try? files.contentsOfDirectory(at: directory.appending(path: "backups"), includingPropertiesForKeys: nil)) ?? []
         var owners: [UUID: Set<String>] = [:]
         for url in backups.filter({ $0.lastPathComponent.hasPrefix(".claude.json") }) + [current] {
@@ -30,6 +31,19 @@ enum ClaudeCodeLinking {
         }
         return Discovery(identities: owners.compactMapValues { $0.count == 1 ? $0.first : nil },
                          conflictingIDs: Set(owners.filter { $0.value.count != 1 }.keys))
+    }
+
+    static func discover(configs: [URL]) -> Discovery {
+        var owners: [UUID: Set<String>] = [:]
+        var conflicts = Set<UUID>()
+        for root in ClaudeCodeConfigurations.unique(configs) {
+            let found = discover(config: root)
+            conflicts.formUnion(found.conflictingIDs)
+            for (id, email) in found.identities { owners[id, default: []].insert(email) }
+        }
+        conflicts.formUnion(owners.filter { $0.value.count > 1 }.keys)
+        return Discovery(identities: owners.compactMapValues { $0.count == 1 ? $0.first : nil }.filter { !conflicts.contains($0.key) },
+                         conflictingIDs: conflicts)
     }
 
     static func loginCommand(email: String, executable: URL) -> String {

@@ -4,6 +4,10 @@
 
 ### Added
 
+- **Claude Code Log Sources…** in the menu bar, widget title menu and dashboard account menus. A native folder picker adds readable configuration roots containing `projects` or `.claude.json`; the primary source remains enabled and additional selections persist across restarts. Removing a source leaves its files untouched.
+- Per-account source contribution labels and scan times. Directory changes clear previous totals and trigger an immediate or queued scan; the same roots participate in scheduled/wake scans and guided ID discovery.
+- Cross-directory session/request deduplication with whole winning-snapshot token breakdowns and source attribution. Canonical paths collapse symlink aliases. Conflicting account-ID email claims and conflicting session ownership across copies are excluded. Authentication remains unchanged.
+
 - **Link Claude Code…** from account details and dashboard context menus. The guide explains the selected email, shows matching local account IDs, verifies metadata again before saving and requests a token rescan immediately or after an existing scan completes.
 - Email-specific sign-in instructions with a safely quoted command for the installed CLI and an Open Terminal action. Login is never run automatically; checking/linking leaves active Claude Code authentication unchanged. The guide explains that running the command can change the active CLI account.
 - Shared ID discovery excludes conflicting email claims and respects an explicitly supplied configuration directory. Forced token scans requested during another scan are queued instead of discarded.
@@ -42,6 +46,9 @@
 - Confirmed offline state or a failed credential-free connection probe is classified as a network error. An inconclusive timeout remains unavailable.
 
 ### Verification
+
+- Verified the installed native folder picker, temporary source addition, live primary-source contribution and empty-source labels, then removed the verification source.
+- Synthetic scanner fixtures cover copied sessions, independent sessions sharing request IDs, larger snapshots, exact source attribution, aliases, selection validation, metadata conflicts, conflicting owners, warm-cache changes, source removal and unavailable roots. Store fixtures verify duplicate additions, persistence/relaunch, pinned primary, forced rescans, contribution tracking and unchanged authentication metadata. Existing guided-linking fixtures pass. Universal arm64/x86_64 build and signature checks passed.
 
 - Verified live ID discovery/linking for the dev account and observed refreshed Claude Code token totals. Its active Claude Code configuration remained byte-for-byte unchanged. The interactive login command was checked against installed CLI help; no live login switch was performed.
 - Isolated fixtures cover current/backups discovery, selected-email matching, missing/conflicting IDs, malformed metadata, shell quoting, changed-ID rejection, verified persistence and immediate/queued token scanning with synthetic logs. Universal macOS build and signature checks passed.

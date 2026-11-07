@@ -81,7 +81,7 @@ struct ClaudeCodeLinkView: View {
             checking = false
             return
         }
-        let discovery = await Task.detached { ClaudeCodeLinking.discover() }.value
+        let discovery = await store.discoverClaudeCodeIDs()
         ids = discovery.matching(email)
         message = ids.isEmpty
             ? "No unambiguous Claude Code ID was found for this email. Sign in using the steps below, then check again."

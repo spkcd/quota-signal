@@ -142,6 +142,11 @@ final class UsageStore: ObservableObject {
     private var lastClaudeCodeSignInCheck = Date.distantPast
     private let defaults = UserDefaults.standard
     private let claudeCodeTokens = ClaudeCodeTokens()
+    @Published private(set) var localTokenDirectories = ClaudeCodeConfigurations.directories()
+    @Published private(set) var contributingTokenDirectories: [UUID: Set<URL>] = [:]
+    @Published private(set) var scannedTokenDirectories = Set<URL>()
+    @Published var showingLogSources = false
+
     @Published private var localTokenTotals: [UUID: ClaudeCodeTokens.Counts] = [:]
     @Published private var linkedTokenEmails: Set<String>?
     @Published private(set) var localTokenScanCompletedAt: Date?
@@ -339,6 +344,7 @@ final class UsageStore: ObservableObject {
             localTokenScanCompletedAt = nil
             tokenQueries = queries
         }
+        let directories = localTokenDirectories
         tokenTask = Task {
             defer {
                 tokenTask = nil
@@ -352,21 +358,53 @@ final class UsageStore: ObservableObject {
             for (id, email) in saved {
                 if let uuid = UUID(uuidString: id) { identities[uuid] = email.lowercased() }
             }
-            let discovery = await Task.detached { ClaudeCodeLinking.discover() }.value
+            let discovery = await Task.detached { ClaudeCodeLinking.discover(configs: directories) }.value
             identities = identities.filter { !discovery.conflictingIDs.contains($0.key) }
             identities.merge(discovery.identities) { _, newer in newer }
             defaults.set(Dictionary(uniqueKeysWithValues: identities.map { ($0.key.uuidString, $0.value) }),
                          forKey: "claudeCodeLogIdentities")
-            let totals = await claudeCodeTokens.totals(for: queries, knownEmails: identities)
-            localTokenTotals = totals
+            let result = await claudeCodeTokens.scan(for: queries, knownEmails: identities, directories: directories)
+            guard directories == localTokenDirectories else { tokenRescanRequested = true; return }
+            localTokenTotals = result.totals
+            contributingTokenDirectories = result.contributingDirectories
+            scannedTokenDirectories = result.scannedDirectories
             linkedTokenEmails = Set(identities.values)
             localTokenScanCompletedAt = .now
         }
     }
 
+    func discoverClaudeCodeIDs() async -> ClaudeCodeLinking.Discovery {
+        let directories = localTokenDirectories
+        return await Task.detached { ClaudeCodeLinking.discover(configs: directories) }.value
+    }
+
+    func addTokenDirectories(_ urls: [URL]) -> Bool {
+        guard !demo, urls.allSatisfy(ClaudeCodeConfigurations.isSupported) else { return false }
+        updateTokenDirectories(ClaudeCodeConfigurations.unique(localTokenDirectories + urls))
+        return true
+    }
+
+    func removeTokenDirectory(_ url: URL) {
+        guard !demo, url != ClaudeCodeConfigurations.primary else { return }
+        updateTokenDirectories(localTokenDirectories.filter { $0 != url })
+    }
+
+    private func updateTokenDirectories(_ urls: [URL]) {
+        guard urls != localTokenDirectories else { return }
+        localTokenDirectories = urls
+        defaults.set(urls.dropFirst().map(\.path), forKey: ClaudeCodeConfigurations.preferenceKey)
+        localTokenTotals = [:]
+        contributingTokenDirectories = [:]
+        scannedTokenDirectories = []
+        localTokenScanCompletedAt = nil
+        refreshLocalTokens(force: true)
+    }
+
     func linkClaudeCode(for account: Account, expectedIDs: [UUID]) async -> Bool {
         guard !demo, accounts.contains(where: { $0.id == account.id && tokenEmail(for: $0) == tokenEmail(for: account) }) else { return false }
-        let discovery = await Task.detached { ClaudeCodeLinking.discover() }.value
+        let directories = localTokenDirectories
+        let discovery = await Task.detached { ClaudeCodeLinking.discover(configs: directories) }.value
+        guard directories == localTokenDirectories else { return false }
         let ids = discovery.matching(tokenEmail(for: account))
         guard !ids.isEmpty, ids == expectedIDs,
               accounts.contains(where: { $0.id == account.id && tokenEmail(for: $0) == tokenEmail(for: account) }) else { return false }

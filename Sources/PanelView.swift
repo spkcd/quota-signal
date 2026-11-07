@@ -128,6 +128,9 @@ struct PanelView: View {
         .sheet(item: $editor) { account in
             AccountEditor(store: store, original: account)
         }
+        .sheet(isPresented: $store.showingLogSources) {
+            ClaudeCodeSourcesView(store: store)
+        }
         .sheet(item: $linkingAccount) { account in
             ClaudeCodeLinkView(store: store, account: account)
         }
@@ -148,7 +151,10 @@ struct PanelView: View {
             Image(systemName: "waveform.path").font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(Instrument.signal).accessibilityHidden(true)
             Text("Quota Signal").font(.system(size: 15, weight: .semibold))
-                .contextMenu { Button("Export Support Diagnostics…", action: exportDiagnostics) }
+                .contextMenu {
+                    Button("Claude Code Log Sources…") { store.showingLogSources = true }.disabled(store.demo)
+                    Button("Export Support Diagnostics…", action: exportDiagnostics)
+                }
             if store.demo {
                 Text("Demo data").font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Instrument.warning)
@@ -278,6 +284,7 @@ struct PanelView: View {
         .help(latest.map { "Last updated " + $0.observed.formatted(date: .abbreviated, time: .shortened) }
               ?? row.freshness)
         .contextMenu {
+            Button("Claude Code Log Sources…") { store.select(account.id); store.showingLogSources = true }.disabled(store.demo)
             Button("Link Claude Code…") { linkingAccount = account }
                 .disabled(store.demo)
             Button("Retry account") { accountAction(account, false) }
