@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Add a Claude workspace · Quota Signal</title>
+<style>
+  :root { color-scheme: dark; font: 16px system-ui; background: #161b20; color: #f1f6fa }
+  main { max-width: 34rem; margin: 12vh auto; padding: 0 1.5rem }
+  h1 { font-size: 1.8rem }
+  p { line-height: 1.5 }
+  a, button { font: inherit; color: #8ae6f4 }
+  button { padding: .55rem .85rem; background: #222c34; border: 1px solid #526572; border-radius: .4rem; cursor: pointer }
+  button:disabled { opacity: .55 }
+</style>
+<main>
+  <h1>Add a Claude workspace</h1>
+  <p>Sign in to Claude in this Chrome profile and select the workspace you want to track. Quota Signal connects a new workspace as soon as it can read its weekly usage.</p>
+  <p><a href="https://claude.ai/new" target="_blank" rel="noopener">Open Claude sign-in</a></p>
+  <p id="status" role="status"></p>
+</main>
+<script type="module" src="setup.js"></script>
+</html>

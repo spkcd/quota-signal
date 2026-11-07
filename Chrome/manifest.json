@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Quota Signal for Claude",
+  "version": "1.2.0",
+  "description": "Refresh verified Claude workspaces in Quota Signal.",
+  "permissions": [
+    "alarms",
+    "scripting",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "https://claude.ai/*"
+  ],
+  "background": {
+    "service_worker": "worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Quota Signal \u00b7 Refresh Claude Usage"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7UBgVFQOmuvoBkNblGDO9pfTRCOoC4DPa2WRu/RbA3dHX8qotSQXojHj3S0MJgtrWErlohI0LRz4oA+Xmw6WkIyDKra7Qhsu/SWh5Hemd1z7f2HKsWTDb+40qpchZ5cBLhMKFujhy4rx49BBCt2pENDRxb15kR0HoOR1F7dagoYFCb/HggAlERecUdYZ+OyUZnBlV0OMaMDAP/AmRGCYmXFXrja5LVk3FJFxBEBFUfZPnB6l6kIyBmRcXV6dnVog/w00b5VB42FDTyIrsUNCAfy2RfjlD3Nusj5N6hrF5PQ/GQ5MSvHNGHLK5RSY72eaqBgw3yrc5h7OuVptXjqFBQIDAQAB"
+}

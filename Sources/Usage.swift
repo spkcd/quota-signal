@@ -1,0 +1,307 @@
+import Foundation
+import SwiftUI
+
+enum ResetOffer: String, Codable, CaseIterable, Identifiable {
+    case unknown = "Unknown"
+    case available = "Available"
+    case none = "None available"
+    var id: Self { self }
+}
+
+struct Reading: Codable, Identifiable {
+    var observed: Date
+    var reset: Date
+    var percent: Double
+    var fromCode = false
+    var fromWeb: Bool?
+    var backgroundWeb: Bool?
+    var webOffer: ResetOffer?
+    var id: Date { observed }
+    static let week: TimeInterval = 7 * 24 * 60 * 60
+}
+
+struct Account: Codable, Identifiable {
+    var id = UUID()
+    var name: String
+    var webIdentity: WebIdentity?
+    var offer: ResetOffer = .unknown
+    var offerChecked: Date?
+    var readings: [Reading] = []
+
+    var latest: Reading? { readings.last }
+    var cycle: [Reading] {
+        readings
+    }
+
+    mutating func record(_ reading: Reading) {
+        guard reading.percent.isFinite, (0...100).contains(reading.percent),
+              reading.reset > reading.observed,
+              reading.reset.timeIntervalSince(reading.observed) <= Reading.week + 3600 else { return }
+        if let latest {
+            guard reading.observed > latest.observed else { return }
+            if abs(latest.reset.timeIntervalSince(reading.reset)) >= 60 { readings.removeAll() }
+            else if reading.observed.timeIntervalSince(latest.observed) < 300,
+                    latest.percent == reading.percent, latest.fromCode == reading.fromCode,
+                    latest.fromWeb == reading.fromWeb {
+                readings[readings.count - 1] = reading
+                return
+            }
+        }
+        readings.append(reading)
+        if readings.count > 2500 { readings.removeFirst(readings.count - 2500) }
+    }
+}
+
+enum Bridge {
+    private struct Payload: Decodable {
+        struct Window: Decodable {
+            var used_percentage: Double
+            var resets_at: Double
+        }
+        struct Limits: Decodable { var seven_day: Window? }
+        var rate_limits: Limits
+    }
+
+    static var directory: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appending(path: "Library/Application Support/Quota Signal/Feeds", directoryHint: .isDirectory)
+    }
+
+    static func file(for id: UUID) -> URL {
+        directory.appending(path: id.uuidString + ".json")
+    }
+
+    static func reading(for id: UUID) -> Reading? {
+        guard let data = try? Data(contentsOf: file(for: id)) else { return nil }
+        return try? JSONDecoder().decode(Reading.self, from: data)
+    }
+
+    static func capture(id: UUID) throws {
+        let input = FileHandle.standardInput.readDataToEndOfFile()
+        guard let payload = try? JSONDecoder().decode(Payload.self, from: input),
+              let week = payload.rate_limits.seven_day,
+              (0...100).contains(week.used_percentage), week.resets_at.isFinite else { return }
+        let now = Date.now
+        let reset = Date(timeIntervalSince1970: week.resets_at)
+        guard reset > now, reset.timeIntervalSince(now) <= Reading.week + 3600 else { return }
+        let reading = Reading(observed: now, reset: reset, percent: week.used_percentage, fromCode: true)
+        try write(reading, for: id)
+        print("Weekly " + week.used_percentage.formatted(.number.precision(.fractionLength(0...1))) + "%")
+    }
+
+    static func write(_ reading: Reading, for id: UUID) throws {
+        let url = file(for: id)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        if reading.fromWeb == true {
+            // Chrome profiles have separate host processes, so serialize writes per account.
+            let descriptor = open(url.appendingPathExtension("lock").path, O_CREAT | O_RDWR, 0o600)
+            guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown) }
+            defer { close(descriptor) }
+            guard flock(descriptor, LOCK_EX) == 0 else { throw CocoaError(.fileWriteUnknown) }
+            if let previous = Self.reading(for: id), previous.fromWeb == true {
+                if reading.observed <= previous.observed { return }
+                if reading.observed.timeIntervalSince(previous.observed) < 240,
+                   reading.percent == previous.percent, reading.reset == previous.reset,
+                   reading.webOffer == previous.webOffer, reading.backgroundWeb == previous.backgroundWeb { return }
+            }
+            try JSONEncoder().encode(reading).write(to: url, options: .atomic)
+            return
+        }
+        try JSONEncoder().encode(reading).write(to: url, options: .atomic)
+    }
+}
+
+@MainActor
+final class UsageStore: ObservableObject {
+    enum LocalTokenStatus {
+        case checking, needsID, awaitingCycle, ambiguous, noLogs
+        case recorded(ClaudeCodeTokens.Counts)
+
+        var label: String {
+            switch self {
+            case .checking: "Checking local logs…"
+            case .needsID: "Account ID needed"
+            case .awaitingCycle: "Awaiting weekly quota reading"
+            case .ambiguous: "Multiple accounts share this email"
+            case .noLogs: "No attributable logs this week"
+            case .recorded: "Local logs found"
+            }
+        }
+    }
+
+    @Published private(set) var accounts: [Account] = []
+    @Published var selected: UUID?
+    @Published var showingDetail = false
+    @Published private(set) var demo = false
+    private let defaults = UserDefaults.standard
+    private let claudeCodeTokens = ClaudeCodeTokens()
+    @Published private var localTokenTotals: [UUID: ClaudeCodeTokens.Counts] = [:]
+    @Published private var linkedTokenEmails: Set<String>?
+    @Published private(set) var localTokenScanCompletedAt: Date?
+    private var tokenQueries: [ClaudeCodeTokens.Query] = []
+    private var tokenTask: Task<Void, Never>?
+    private var lastTokenScan = Date.distantPast
+    private var savedSelection: UUID?
+    private var savedAccounts: [Account] = []
+
+    init() {
+        if let data = defaults.data(forKey: "accounts"),
+           let decoded = try? JSONDecoder().decode([Account].self, from: data) {
+            accounts = decoded
+        }
+        selected = defaults.string(forKey: "selected").flatMap(UUID.init(uuidString:))
+        if !accounts.contains(where: { $0.id == selected }) { selected = accounts.first?.id }
+        poll()
+    }
+
+    var current: Account? { accounts.first { $0.id == selected } ?? accounts.first }
+
+    func select(_ id: UUID) {
+        selected = id
+        if !demo { defaults.set(id.uuidString, forKey: "selected") }
+    }
+
+    func save(_ account: Account) {
+        guard !demo else { return }
+        if let index = accounts.firstIndex(where: { $0.id == account.id }) {
+            accounts[index] = account
+        } else {
+            accounts.append(account)
+        }
+        select(account.id)
+        persist()
+    }
+
+    func remove(_ id: UUID) {
+        guard !demo else { return }
+        accounts.removeAll { $0.id == id }
+        try? FileManager.default.removeItem(at: Bridge.file(for: id))
+        selected = accounts.first?.id
+        defaults.set(selected?.uuidString, forKey: "selected")
+        persist()
+    }
+
+    func poll() {
+        guard !demo else { return }
+        if let result = WebCapture.pendingConnection() {
+            var account = accounts.first { $0.webIdentity == result.identity || $0.id == result.account }
+                ?? Account(id: result.account, name: result.identity.email + " · " + result.identity.workspace)
+            if account.webIdentity == nil || account.webIdentity == result.identity {
+                account.webIdentity = result.identity
+                account.record(result.reading)
+                if let offer = result.reading.webOffer, account.latest?.observed == result.reading.observed {
+                    account.offer = offer
+                    account.offerChecked = result.reading.observed
+                }
+                save(account)
+            }
+            WebCapture.finishPairing()
+        }
+        var updated = accounts
+        var changed = false
+        for index in updated.indices {
+            let account = updated[index]
+            guard let reading = Bridge.reading(for: account.id),
+                  reading.observed > (account.latest?.observed ?? .distantPast) else { continue }
+            updated[index].record(reading)
+            if let offer = reading.webOffer {
+                updated[index].offer = offer
+                updated[index].offerChecked = reading.observed
+            }
+            changed = true
+        }
+        if changed {
+            accounts = updated
+            persist()
+        }
+    }
+
+    private func tokenEmail(for account: Account) -> String {
+        (account.webIdentity?.email ?? account.name).lowercased()
+    }
+
+    func localTokenStatus(for account: Account) -> LocalTokenStatus {
+        if demo { return .recorded(.init(input: 248_600, output: 93_400, cacheWrite: 120_000, cacheRead: 614_000)) }
+        guard let linkedTokenEmails else { return .checking }
+        let email = tokenEmail(for: account)
+        guard linkedTokenEmails.contains(email) else { return .needsID }
+        guard let reset = account.latest?.reset, reset > .now else { return .awaitingCycle }
+        let query = ClaudeCodeTokens.Query(id: account.id, email: email, reset: reset)
+        guard tokenQueries.contains(query) else {
+            let matching = accounts.filter {
+                tokenEmail(for: $0) == email && ($0.latest?.reset ?? .distantPast) > .now
+            }
+            return matching.count > 1 ? .ambiguous : .checking
+        }
+        guard localTokenScanCompletedAt != nil else { return .checking }
+        return localTokenTotals[account.id].map(LocalTokenStatus.recorded) ?? .noLogs
+    }
+
+    func refreshLocalTokens() {
+        guard !demo, tokenTask == nil else { return }
+        let candidates = accounts.compactMap { account -> ClaudeCodeTokens.Query? in
+            let email = tokenEmail(for: account)
+            guard email.contains("@"), let reset = account.latest?.reset, reset > .now else { return nil }
+            return .init(id: account.id, email: email, reset: reset)
+        }
+        let counts = Dictionary(grouping: candidates, by: \.email)
+        let queries = candidates.filter { counts[$0.email]?.count == 1 }
+        guard queries != tokenQueries || Date.now.timeIntervalSince(lastTokenScan) >= 300 else { return }
+        lastTokenScan = .now
+        if queries != tokenQueries {
+            localTokenTotals = [:]
+            localTokenScanCompletedAt = nil
+            tokenQueries = queries
+        }
+        tokenTask = Task {
+            defer { tokenTask = nil }
+            let saved = defaults.dictionary(forKey: "claudeCodeLogIdentities") as? [String: String] ?? [:]
+            var identities = [UUID: String]()
+            for (id, email) in saved {
+                if let uuid = UUID(uuidString: id) { identities[uuid] = email.lowercased() }
+            }
+            let current = await Task.detached { ClaudeCodeTokens.localIdentities() }.value
+            identities.merge(current) { _, newer in newer }
+            defaults.set(Dictionary(uniqueKeysWithValues: identities.map { ($0.key.uuidString, $0.value) }),
+                         forKey: "claudeCodeLogIdentities")
+            let totals = await claudeCodeTokens.totals(for: queries, knownEmails: identities)
+            localTokenTotals = totals
+            linkedTokenEmails = Set(identities.values)
+            localTokenScanCompletedAt = .now
+        }
+    }
+
+    private func persist() {
+        if let data = try? JSONEncoder().encode(accounts) { defaults.set(data, forKey: "accounts") }
+    }
+
+    func toggleDemo() {
+        if demo {
+            accounts = savedAccounts
+            selected = savedSelection
+            demo = false
+            poll()
+            return
+        }
+        savedAccounts = accounts
+        savedSelection = selected
+        let now = Date.now
+        accounts = [
+            example("Studio", percent: [4, 12, 24, 29, 41, 56, 68], reset: now.addingTimeInterval(34 * 3600), offer: .available),
+            example("Personal", percent: [6, 10, 18, 22, 31], reset: now.addingTimeInterval(62 * 3600), offer: .none)
+        ]
+        selected = accounts.first?.id
+        demo = true
+    }
+
+    private func example(_ name: String, percent: [Double], reset: Date, offer: ResetOffer) -> Account {
+        let start = reset.addingTimeInterval(-Reading.week)
+        let span = Date.now.timeIntervalSince(start)
+        let samples = percent.enumerated().map { index, value in
+            Reading(observed: start.addingTimeInterval(span * (0.06 + 0.94 * Double(index) / Double(percent.count - 1))),
+                    reset: reset, percent: value, fromCode: true)
+        }
+        return Account(name: name, offer: offer, offerChecked: .now, readings: samples)
+    }
+}
