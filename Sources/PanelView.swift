@@ -96,6 +96,7 @@ enum Instrument {
 struct PanelView: View {
     @ObservedObject var store: UsageStore
     var hide: () -> Void
+    var exportDiagnostics: () -> Void = {}
     var addAccount: () -> Void
     var accountAction: (Account, Bool) -> Void
     @ViewState private var editor: Account?
@@ -143,6 +144,7 @@ struct PanelView: View {
             Image(systemName: "waveform.path").font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(Instrument.signal).accessibilityHidden(true)
             Text("Quota Signal").font(.system(size: 15, weight: .semibold))
+                .contextMenu { Button("Export Support Diagnostics…", action: exportDiagnostics) }
             if store.demo {
                 Text("Demo data").font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Instrument.warning)

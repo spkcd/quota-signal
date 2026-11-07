@@ -45,6 +45,7 @@ async function run(reading, options = {}) {
         return [{ result: reading }];
       } },
       runtime: {
+        getManifest: () => ({ version: "1.6.0" }),
         connectNative: options.watch ? () => {
           const port = {
             onMessage: { addListener(listener) { port.receive = listener; } },
@@ -81,6 +82,8 @@ async function run(reading, options = {}) {
 const success = await run({ ...target, percent: 30, reset: Date.now() / 1000 + 3600, offer: "Unknown" });
 assert.equal(success.error, undefined);
 assert.equal(success.messages[0].state, "refreshing");
+assert.equal(success.messages[0].companionVersion, "1.6.0");
+assert.equal(success.messages[1].companionVersion, "1.6.0");
 assert.equal(success.messages[1].email, target.email);
 assert.equal(success.messages[0].attempt, success.messages[1].attempt);
 assert.equal(success.expected.email, target.email);

@@ -103,3 +103,22 @@ Companion 1.5.1 and the embedded reader use the same parser. It accepts one labe
 Capture verifies the email, workspace and plan, then checks identity again after Usage loads. Missing or ambiguous meters, invalid resets, unsupported languages and account switches produce a refresh error. The last verified quota and reset remain visible with their original freshness. Open refresh details for the concrete error, correct the account or language, and use **Retry now**.
 
 The offline parser suite uses synthetic, sanitized pages in [Tests/Fixtures/Usage](../Tests/Fixtures/Usage/README.md). It requires no Claude login and never reads your Chrome profile. The fixtures define tested support; additional live page layouts or locales need independently verified, sanitized examples before support is added.
+
+## Export support diagnostics
+
+Right-click the Quota Signal menu bar label or the **Quota Signal** title in the widget, then choose **Export Support Diagnostics…**. Choose a local location in the save dialog. The app saves a JSON report and reveals it in Finder. Canceling the dialog saves nothing. The app does not upload or send the report; sharing is a separate action you control.
+
+The report includes app/build and bundled companion versions, the last companion version reported by each source when known, macOS version, whether Chrome is running, refresh attempt times, elapsed seconds, last-success times, state transitions, and error codes such as `signedOut`, `network`, `layout`, `mismatch` and `unavailable`. Elapsed seconds describe the status timestamp relative to its attempt start; they are not network-only measurements. A bundled companion version does not establish which version a Chrome profile currently has loaded. Reload companion **1.6.0** in each dedicated profile to enable version reporting on subsequent refreshes; older companions remain compatible.
+
+Reports always use anonymous labels such as **Account 1**, with report-local attempt numbers. They omit account IDs, emails, workspace names, Chrome profile names, filesystem paths, credentials, raw error messages, quota percentages, token totals and transcript text. Exact timestamps and account counts remain in the report. Redaction uses a fixed field allowlist rather than trying to remove secrets from arbitrary log text. There is no unredacted export option.
+
+Each account/source keeps at most 50 structured state transitions locally. History starts after this update and survives restarts; earlier transitions cannot be reconstructed. Missing or unreadable history is marked in the report, while a readable latest status is still included. The report does not inspect Claude Code transcripts, Chrome cookies or browser session data. It reads existing refresh metadata only.
+
+Diagnostics regression checks can run without any real accounts:
+
+```sh
+fixture=$(mktemp -d)
+xcrun swiftc -swift-version 6 Sources/RefreshStatus.swift Sources/SupportDiagnostics.swift Tests/SupportDiagnosticsTests.swift -o "$fixture/diagnostics"
+QUOTA_SIGNAL_TEST_DIRECTORY="$fixture/state" "$fixture/diagnostics"
+node Tests/refresh-worker.test.mjs
+```

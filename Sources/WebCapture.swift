@@ -35,6 +35,7 @@ enum WebCapture {
         let plan: String?
         let percent: Double
         let reset: Double
+        let companionVersion: String?
         let offer: ResetOffer
     }
 
@@ -104,6 +105,7 @@ enum WebCapture {
         let started: Double
         let state: RefreshStatus.State
         let detail: String?
+        let companionVersion: String?
     }
 
     private struct WatchPayload: Decodable {
@@ -191,7 +193,8 @@ enum WebCapture {
             try RefreshStatus.write(.init(attempt: status.attempt,
                                            started: Date(timeIntervalSince1970: status.started),
                                            updated: now, source: .chrome, state: status.state,
-                                           message: status.detail.map { String($0.prefix(512)) }),
+                                           message: status.detail.map { String($0.prefix(512)) },
+                                           companionVersion: SupportDiagnostics.version(status.companionVersion)),
                                     for: account.id)
             return Reply(ok: true)
         }
@@ -233,7 +236,8 @@ enum WebCapture {
             return Date(timeIntervalSince1970: value)
         } ?? now
         try RefreshStatus.write(.init(attempt: message.attempt ?? UUID(), started: started,
-                                       updated: now, source: .chrome, state: .success, lastSuccess: now),
+                                       updated: now, source: .chrome, state: .success, lastSuccess: now,
+                                       companionVersion: SupportDiagnostics.version(message.companionVersion)),
                                 for: existing.id)
         if let command {
             UserDefaults.standard.set(command.profile, forKey: "chromeProfile." + existing.id.uuidString)

@@ -38,6 +38,7 @@ async function report(identity, attempt, started, state, detail) {
   // Telemetry must not prevent a quota reading when an older native host is installed.
   await chrome.runtime.sendNativeMessage("local.quota_signal", {
     kind: "refresh-status", identity, attempt, started, state, detail,
+    companionVersion: chrome.runtime.getManifest().version,
   }).catch(() => {});
 }
 
@@ -105,7 +106,7 @@ async function deliver(pair, options = {}) {
     const legacy = binding && reading.email === binding.email &&
       reading.workspace === binding.workspace && reading.plan === "Ultra";
     const reply = await chrome.runtime.sendNativeMessage("local.quota_signal", {
-      ...reading, pair, attempt, started, command: options.command, account: legacy ? binding.account : undefined,
+      ...reading, pair, attempt, started, companionVersion: chrome.runtime.getManifest().version, command: options.command, account: legacy ? binding.account : undefined,
     });
     if (pair && reply?.alreadyConnected) return null;
     if (!reply?.ok) {

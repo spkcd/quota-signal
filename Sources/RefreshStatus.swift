@@ -1,7 +1,7 @@
 import Foundation
 
 struct RefreshStatus: Codable, Equatable {
-    enum Source: String, Codable {
+    enum Source: String, Codable, CaseIterable {
         case chrome, embedded, code
         var label: String {
             switch self {
@@ -46,6 +46,43 @@ struct RefreshStatus: Codable, Equatable {
     let state: State
     var lastSuccess: Date?
     var message: String?
+    var companionVersion: String?
+
+    static func validVersion(_ value: String?) -> String? {
+        guard let value, value.count <= 32,
+              value.range(of: #"^[0-9]+(?:\.[0-9]+){0,3}$"#, options: .regularExpression) == value.startIndex..<value.endIndex else { return nil }
+        return value
+    }
+
+    static let historyLimit = 50
+
+    // Persist only structured fields. Raw messages never enter the diagnostics journal.
+    struct Transition: Codable {
+        let attempt: UUID
+        let started: Date
+        let updated: Date
+        let state: State
+        let lastSuccess: Date?
+        let companionVersion: String?
+
+        init(_ status: RefreshStatus) {
+            attempt = status.attempt
+            started = status.started
+            updated = status.updated
+            state = status.state
+            lastSuccess = status.lastSuccess
+            companionVersion = RefreshStatus.validVersion(status.companionVersion)
+        }
+    }
+
+    static func historyFile(for id: UUID, source: Source) -> URL {
+        file(for: id, source: source).deletingPathExtension().appendingPathExtension("history.json")
+    }
+
+    static func history(for id: UUID, source: Source) -> [Transition]? {
+        guard let data = try? Data(contentsOf: historyFile(for: id, source: source)) else { return nil }
+        return try? JSONDecoder().decode([Transition].self, from: data)
+    }
 
     static func file(for id: UUID, source: Source) -> URL {
         Bridge.directory.appending(path: id.uuidString + "." + source.rawValue + "-refresh.json")
@@ -70,7 +107,18 @@ struct RefreshStatus: Codable, Equatable {
             (previous.started == event.started && previous.updated >= event.updated) {
             next = previous
         }
+        next.companionVersion = validVersion(next.companionVersion)
         next.lastSuccess = [previous?.lastSuccess, event.lastSuccess].compactMap { $0 }.max()
         try JSONEncoder().encode(next).write(to: url, options: .atomic)
+        // The same per-source lock orders journal writes across native-host processes.
+        // A journal failure must never discard an otherwise valid refresh status.
+        if next.attempt == event.attempt && next.updated == event.updated {
+            var entries = history(for: id, source: event.source) ?? []
+            if entries.last?.attempt != next.attempt || entries.last?.state != next.state {
+                entries.append(Transition(next))
+                try? JSONEncoder().encode(Array(entries.suffix(historyLimit)))
+                    .write(to: historyFile(for: id, source: event.source), options: .atomic)
+            }
+        }
     }
 }

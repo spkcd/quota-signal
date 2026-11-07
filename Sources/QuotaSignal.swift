@@ -1,6 +1,7 @@
 import AppKit
 import ServiceManagement
 import SwiftUI
+import UniformTypeIdentifiers
 
 final class FloatingPanel: NSPanel {
     override var canBecomeKey: Bool { true }
@@ -30,6 +31,7 @@ final class WidgetController: NSObject, NSApplicationDelegate {
             store.showingDetail = args.contains("--demo-detail")
         }
         let view = PanelView(store: store, hide: { [weak self] in self?.panel.orderOut(nil) },
+                             exportDiagnostics: { [weak self] in self?.exportDiagnostics() },
                              addAccount: { [weak self] in self?.addAccountInChrome() },
                              accountAction: { [weak self] account, reconnect in
                                  self?.openAccountAction(account, reconnect: reconnect)
@@ -74,6 +76,7 @@ final class WidgetController: NSObject, NSApplicationDelegate {
             ("Open Claude sign-in in Chrome", #selector(signInInChrome), ""),
             ("Sign in with email for Chrome-free refresh", #selector(signInForRefresh), ""),
             ("Refresh Claude usage now", #selector(refreshClaude), ""),
+            ("Export Support Diagnostics…", #selector(exportDiagnostics), ""),
             ("Toggle demo data", #selector(toggleDemo), ""),
             ("Quit Quota Signal", #selector(quit), "q")
         ] {
@@ -138,6 +141,25 @@ final class WidgetController: NSObject, NSApplicationDelegate {
                 try service.register()
                 if service.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
             }
+        } catch {
+            NSAlert(error: error).runModal()
+        }
+    }
+
+    @objc private func exportDiagnostics() {
+        let save = NSSavePanel()
+        save.title = "Export Support Diagnostics"
+        save.message = "Saves a local JSON report with anonymous account labels, versions, refresh timings, states and error codes. Emails, workspace names, paths, raw errors and transcript text are excluded. Nothing is uploaded."
+        save.nameFieldStringValue = "Quota-Signal-Diagnostics.json"
+        save.allowedContentTypes = [.json]
+        save.canCreateDirectories = true
+        NSApp.activate()
+        guard save.runModal() == .OK, let url = save.url else { return }
+        do {
+            let data = try SupportDiagnostics.data(accountIDs: store.accounts.map(\.id),
+                                                   chromeRunning: !NSRunningApplication.runningApplications(withBundleIdentifier: "com.google.Chrome").isEmpty)
+            try data.write(to: url, options: .atomic)
+            NSWorkspace.shared.activateFileViewerSelecting([url])
         } catch {
             NSAlert(error: error).runModal()
         }

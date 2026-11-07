@@ -4,6 +4,10 @@
 
 ### Added
 
+- **Export Support Diagnostics…** in the menu bar and the widget title context menu. A native save dialog writes a local JSON report; nothing is uploaded. Reports use anonymous account labels and report-local attempt numbers, excluding emails, workspace/profile names, paths, credentials, raw errors and transcript text through a fixed field allowlist.
+- Reports include app/build and bundled/reported companion versions, macOS version, Chrome running state, refresh timestamps, elapsed seconds, last-success times and error codes. Companion 1.6.0 reports its version with attempts and readings; older companions remain compatible with version coverage left unknown.
+- A persisted, bounded journal retains the latest 50 structured state transitions per account/source using the existing source lock. Late replies do not add false transitions. Missing or unreadable history is explicitly marked, and readable latest status remains available. History starts after this update.
+
 - Chrome companion 1.5.1 hardens the shared Chrome/embedded Usage parser. Capture requires a unique all-model weekly meter and reset, validates meter scale and local reset clocks, and rechecks the account email after Usage loads to detect switches between identically named workspaces.
 - English 24-hour reset clocks join the existing AM/PM format. Unsupported languages and ambiguous or malformed readings report a concrete error while preserving the last verified quota and reset.
 
@@ -34,6 +38,9 @@
 - Confirmed offline state or a failed credential-free connection probe is classified as a network error. An inconclusive timeout remains unavailable.
 
 ### Verification
+
+- Verified the installed native export/save flow and inspected a redacted JSON report covering all four connected accounts. Confirmed app/build and bundled companion versions, anonymous source snapshots and absence of real account identifiers.
+- Diagnostics fixtures cover deliberately sensitive raw text and invalid version strings, anonymous labels, attempt correlation, elapsed times, error codes, last-success retention, out-of-order events, bounded history, empty accounts and damaged journals. Existing refresh-status and Chrome worker regressions pass. Universal arm64/x86_64 build and signature checks passed.
 
 - Added 26 synthetic, sanitized fixtures executed against a real ephemeral WebKit DOM. Coverage includes both supported English headings, en-US/en-GB clock formats, midnight/noon, cycle rollover, competing model/session meters, missing/duplicate meters and resets, invalid percentages and scales, and identity changes during capture. Fixtures contain invented identities only; they do not claim live coverage of other Claude layouts or locales.
 - Worker regression checks prove identity/cycle parsing failures retain the prior verified quota/reset and report the concrete error. Universal macOS build and signature checks passed.
