@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en-US"><body>
+<button data-testid="user-menu-button" aria-controls="account-menu" onclick="document.getElementById('account-menu').hidden = !document.getElementById('account-menu').hidden">
+  <span class="df-footer-name">Fixture Studio</span><span class="df-footer-suffix-text">Ultra</span>
+</button>
+<div id="account-menu" hidden>
+  <div id="email">reader@example.com</div>
+  <button data-testid="user-menu-usage" onclick="openUsage()">Usage</button>
+</div>
+<div id="usage" hidden>
+  <section id="weekly"><div id="weekly-label">This week<span aria-hidden="true"> decorative icon</span></div>
+    <div><div role="meter" aria-labelledby="weekly-label" aria-valuemin="0" aria-valuemax="100" aria-valuenow="42"></div></div>
+    <div id="reset">Resets Sunday 3:30 PM</div>
+  </section>
+  <section><div id="session-label">Current session</div><div role="meter" aria-labelledby="session-label" aria-valuenow="97"></div><div>Resets in 2 hr</div></section>
+  <section><div id="model-label">Weekly limit · Sonnet</div><div role="meter" aria-labelledby="model-label" aria-valuenow="81"></div><div>Resets Monday 4:00 PM</div></section>
+  <div>No resets right now</div>
+</div>
+<script>
+function openUsage() {
+  document.getElementById('account-menu').hidden = true;
+  document.getElementById('usage').hidden = false;
+  location.hash = '#settings/usage';
+  if (window.afterUsage) window.afterUsage();
+}
+</script>
+</body></html>

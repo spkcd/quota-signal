@@ -4,6 +4,9 @@
 
 ### Added
 
+- Chrome companion 1.5.1 hardens the shared Chrome/embedded Usage parser. Capture requires a unique all-model weekly meter and reset, validates meter scale and local reset clocks, and rechecks the account email after Usage loads to detect switches between identically named workspaces.
+- English 24-hour reset clocks join the existing AM/PM format. Unsupported languages and ambiguous or malformed readings report a concrete error while preserving the last verified quota and reset.
+
 - Wake, display-wake, resumed-session and restored-network recovery. Notification bursts are debounced for two seconds and coalesced within a 15-second cooldown.
 - Chrome companion 1.5.0 receives recovery signals through a local native messaging connection. Chrome startup, overdue alarms and returning Claude tabs also trigger recovery.
 - Per-profile recovery has a persisted maximum of three attempts within five minutes, with 30- and 90-second backoffs for network/unavailable failures. Authentication, layout and workspace mismatch failures stop the cycle.
@@ -31,6 +34,9 @@
 - Confirmed offline state or a failed credential-free connection probe is classified as a network error. An inconclusive timeout remains unavailable.
 
 ### Verification
+
+- Added 26 synthetic, sanitized fixtures executed against a real ephemeral WebKit DOM. Coverage includes both supported English headings, en-US/en-GB clock formats, midnight/noon, cycle rollover, competing model/session meters, missing/duplicate meters and resets, invalid percentages and scales, and identity changes during capture. Fixtures contain invented identities only; they do not claim live coverage of other Claude layouts or locales.
+- Worker regression checks prove identity/cycle parsing failures retain the prior verified quota/reset and report the concrete error. Universal macOS build and signature checks passed.
 
 - Simulated macOS workspace notifications coalesced into one signal, and all four real accounts completed fresh Chrome recovery attempts. Verified native watcher shutdown when its port disconnects.
 - Regression checks cover duplicate triggers, exhausted retry budgets, exact backoffs, worker restart state, expired signals, authentication stops, session navigation, overdue alarms, periodic/backoff collisions and interrupted-tab cleanup.

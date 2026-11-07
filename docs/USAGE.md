@@ -95,3 +95,11 @@ node Tests/refresh-worker.test.mjs
 ```
 
 The notification test injects workspace events inside its own process and uses a temporary signal directory.
+
+## Supported Usage page formats
+
+Companion 1.5.1 and the embedded reader use the same parser. It accepts one labelled all-model weekly meter headed **This week** or **Weekly limit · All models**, with a percentage on a 0–100 scale and an explicit English weekday/reset clock in the same row. English 12-hour AM/PM and 24-hour clocks are supported; en-US and en-GB have regression fixtures. Relative times and other languages are not inferred.
+
+Capture verifies the email, workspace and plan, then checks identity again after Usage loads. Missing or ambiguous meters, invalid resets, unsupported languages and account switches produce a refresh error. The last verified quota and reset remain visible with their original freshness. Open refresh details for the concrete error, correct the account or language, and use **Retry now**.
+
+The offline parser suite uses synthetic, sanitized pages in [Tests/Fixtures/Usage](../Tests/Fixtures/Usage/README.md). It requires no Claude login and never reads your Chrome profile. The fixtures define tested support; additional live page layouts or locales need independently verified, sanitized examples before support is added.

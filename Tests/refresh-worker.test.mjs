@@ -9,6 +9,7 @@ const target = { email: "first@example.com", workspace: "Studio", plan: "Ultra" 
 
 async function run(reading, options = {}) {
   const messages = [];
+  let retainedReading = options.previousReading;
   const removed = [];
   const created = [];
   const alarms = [];
@@ -59,6 +60,7 @@ async function run(reading, options = {}) {
           if (message.kind === "account-command") {
             return { ok: !options.expired, expected: options.commandExpected ?? target, reconnect: options.reconnect ?? false };
           }
+          if (message.percent != null && options.nativeOK !== false) retainedReading = message;
           return { ok: options.nativeOK ?? true };
         },
         getURL: value => "chrome-extension://test/" + value,
@@ -73,7 +75,7 @@ async function run(reading, options = {}) {
   let error;
   let result;
   try { result = await vm.runInContext(options.expression ?? "deliver()", context); } catch (value) { error = value; }
-  return { messages, removed, created, stored, expected, injects, error, result, values, alarms, ports };
+  return { messages, removed, created, stored, expected, injects, error, result, values, alarms, ports, retainedReading };
 }
 
 const success = await run({ ...target, percent: 30, reset: Date.now() / 1000 + 3600, offer: "Unknown" });
@@ -261,3 +263,13 @@ const delayedPairingWatch = await run({ ...target, percent: 30 }, {
 });
 assert.equal(delayedPairingWatch.alarms.filter(event => event.name === "quota-signal-watch").length, 1);
 console.log("Native watch reconnection is bounded when initial pairing is delayed or a host is unavailable.");
+
+// Failed parsing must only report health; it cannot replace a last verified quota or cycle.
+const lastVerified = { ...target, percent: 88, reset: 1800003600 };
+for (const code of ["layout", "mismatch"]) {
+  const failedCapture = await run({ code, error: "Fixture identity/cycle verification failed" }, { previousReading: lastVerified });
+  assert.deepEqual(failedCapture.retainedReading, lastVerified);
+  assert.equal(failedCapture.messages.at(-1).state, code);
+  assert.equal(failedCapture.messages.at(-1).detail, "Fixture identity/cycle verification failed");
+}
+console.log("Parser failures preserve the last verified quota and reset and expose their concrete error.");
