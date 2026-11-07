@@ -41,7 +41,7 @@ On the dashboard, each account shows its refresh state. Open an account and clic
 
 **Sign-in needed** appears only after the browser displays Claude's login page. **Browser closed** means the Chrome application is not running. **Network error** requires an offline indication or a failed connection. A missing or changed usage control produces **Page layout changed**. Inconclusive timeouts are **Refresh unavailable**. A successful refresh becomes **Refresh overdue** after 15 minutes without a new success.
 
-Companion 1.4.0 stores the last verified target in each Chrome profile and checks it during scheduled refreshes. Use **+** to pair a different workspace deliberately. Update the companion files and click **Reload** in Chrome's Extensions page to receive failure details. Before a profile's first successful refresh, historical readings still show their successful observation time, while attempt details may be unavailable.
+Companion 1.5.0 stores the last verified target in each Chrome profile and checks it during scheduled refreshes. Use **+** to pair a different workspace deliberately. Update the companion files and click **Reload** in Chrome's Extensions page to receive failure details. Before a profile's first successful refresh, historical readings still show their successful observation time, while attempt details may be unavailable.
 
 ## Run refresh regression checks
 
@@ -73,3 +73,25 @@ xcrun swiftc -swift-version 6 Sources/ChromeAccountActions.swift Sources/Refresh
 QUOTA_SIGNAL_TEST_DIRECTORY="$test_directory/state" "$test_directory/check"
 rm -r "$test_directory"
 ```
+
+## Refresh after wake and session recovery
+
+Keep Quota Signal and Chrome running. Companion **1.5.0** listens for the app's local wake signal through Chrome native messaging. Quota Signal coalesces system wake, display wake, active-session and restored-network events, then requests background refreshes. The four dedicated profile windows can stay minimized.
+
+Each Chrome profile uses the same queue for scheduled refreshes, recovery, retry and reconnect. A recovery cycle permits up to three attempts within five minutes. Network or temporary availability errors retry after 30 seconds and then 90 seconds. Sign-out, workspace mismatch and page layout errors stop the cycle. Further automatic triggers respect the existing budget and backoff, while explicit user actions remain available. Chrome can delay alarms while the Mac is asleep or busy.
+
+A successful reading less than 30 seconds old satisfies recovery without opening another sample tab. Chrome startup, a delayed periodic alarm and an active Claude tab finishing navigation also check for recovery. After a worker interruption, only the tracked sample tab with its matching marker is eligible for cleanup.
+
+The optional embedded browser reuses its reader and makes up to three recovery attempts with the same backoffs for transient failures. Wake events also request a local Claude Code token rescan. Failed quota refreshes keep the last good reading and expose their error in refresh details.
+
+Run the notification and signal checks with:
+
+```sh
+test_directory=$(mktemp -d)
+xcrun swiftc -swift-version 6 Sources/WakeRecovery.swift Tests/WakeRecoveryTests.swift -o "$test_directory/check"
+QUOTA_SIGNAL_TEST_DIRECTORY="$test_directory/state" "$test_directory/check"
+rm -r "$test_directory"
+node Tests/refresh-worker.test.mjs
+```
+
+The notification test injects workspace events inside its own process and uses a temporary signal directory.

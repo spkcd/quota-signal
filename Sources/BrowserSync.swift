@@ -18,6 +18,7 @@ final class BrowserSync: NSObject, NSWindowDelegate, WKNavigationDelegate {
     private var timer: Timer?
     private var refreshTask: Task<Void, Never>?
     private var navigationFailure: RefreshStatus.State?
+    private var recoveryRequested = false
 
     init(store: UsageStore) {
         self.store = store
@@ -34,9 +35,11 @@ final class BrowserSync: NSObject, NSWindowDelegate, WKNavigationDelegate {
 
     func start(showErrors: Bool = false) {
         guard UserDefaults.standard.bool(forKey: "backgroundClaudeEnabled"), timer == nil else { return }
-        timer = Timer.scheduledTimer(timeInterval: 300, target: self,
-                                     selector: #selector(refresh), userInfo: nil, repeats: true)
-        runRefresh(showErrors: showErrors)
+        let refreshTimer = Timer(timeInterval: 300, target: self,
+                                 selector: #selector(refresh), userInfo: nil, repeats: true)
+        RunLoop.main.add(refreshTimer, forMode: .common)
+        timer = refreshTimer
+        runRefresh(showErrors: showErrors, recovery: true)
     }
 
     func showSignIn() {
@@ -65,7 +68,7 @@ final class BrowserSync: NSObject, NSWindowDelegate, WKNavigationDelegate {
         signInWindow = nil
         let alreadyEnabled = timer != nil
         UserDefaults.standard.set(true, forKey: "backgroundClaudeEnabled")
-        if alreadyEnabled { refreshNow() }
+        if alreadyEnabled { runRefresh(showErrors: true, recovery: true) }
         else { start(showErrors: true) }
     }
 
@@ -79,23 +82,40 @@ final class BrowserSync: NSObject, NSWindowDelegate, WKNavigationDelegate {
 
     @objc private func refresh() { runRefresh(showErrors: false) }
 
-    private func runRefresh(showErrors: Bool) {
+    func recover() {
+        guard UserDefaults.standard.bool(forKey: "backgroundClaudeEnabled") else { return }
+        runRefresh(showErrors: false, recovery: true)
+    }
+
+    private func runRefresh(showErrors: Bool, recovery: Bool = false) {
+        recoveryRequested = recoveryRequested || recovery
         guard refreshTask == nil, let binding, let script, !store.demo else { return }
         refreshTask = Task {
-            defer { refreshTask = nil }
-            let attempt = UUID()
-            let started = Date.now
-            store.recordRefresh(for: binding.account, attempt: attempt, started: started, state: .refreshing)
-            do {
-                try await read(binding, script: script)
-                store.recordRefresh(for: binding.account, attempt: attempt, started: started, state: .success)
-            } catch is CancellationError {
-                return
-            } catch {
-                let state = (error as? SyncError)?.state ?? .unavailable
-                store.recordRefresh(for: binding.account, attempt: attempt, started: started, state: state,
-                                    message: (error as? SyncError)?.message)
-                if showErrors { inform("Claude usage could not refresh", error.localizedDescription) }
+            defer {
+                refreshTask = nil
+                recoveryRequested = false
+            }
+            for index in 0..<3 {
+                guard !store.demo else { return }
+                let attempt = UUID()
+                let started = Date.now
+                store.recordRefresh(for: binding.account, attempt: attempt, started: started, state: .refreshing)
+                do {
+                    try await read(binding, script: script)
+                    store.recordRefresh(for: binding.account, attempt: attempt, started: started, state: .success)
+                    return
+                } catch is CancellationError {
+                    return
+                } catch {
+                    let state = (error as? SyncError)?.state ?? .unavailable
+                    store.recordRefresh(for: binding.account, attempt: attempt, started: started, state: state,
+                                        message: (error as? SyncError)?.message)
+                    guard recoveryRequested, index < 2, state == .network || state == .unavailable else {
+                        if showErrors { inform("Claude usage could not refresh", error.localizedDescription) }
+                        return
+                    }
+                    do { try await Task.sleep(for: .seconds(index == 0 ? 30 : 90)) } catch { return }
+                }
             }
         }
     }

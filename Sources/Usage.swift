@@ -321,7 +321,7 @@ final class UsageStore: ObservableObject {
         return localTokenTotals[account.id].map(LocalTokenStatus.recorded) ?? .noLogs
     }
 
-    func refreshLocalTokens() {
+    func refreshLocalTokens(force: Bool = false) {
         guard !demo, tokenTask == nil else { return }
         let candidates = accounts.compactMap { account -> ClaudeCodeTokens.Query? in
             let email = tokenEmail(for: account)
@@ -330,7 +330,7 @@ final class UsageStore: ObservableObject {
         }
         let counts = Dictionary(grouping: candidates, by: \.email)
         let queries = candidates.filter { counts[$0.email]?.count == 1 }
-        guard queries != tokenQueries || Date.now.timeIntervalSince(lastTokenScan) >= 300 else { return }
+        guard force || queries != tokenQueries || Date.now.timeIntervalSince(lastTokenScan) >= 300 else { return }
         lastTokenScan = .now
         if queries != tokenQueries {
             localTokenTotals = [:]

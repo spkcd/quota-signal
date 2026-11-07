@@ -2,6 +2,14 @@ import { binding } from "./binding.js";
 import { readUsagePage } from "./usage.js";
 
 const alarm = "refresh-claude-usage";
+const recoveryAlarm = "quota-signal-recovery";
+const watchAlarm = "quota-signal-watch";
+const backoffs = [30_000, 90_000];
+let recoveryTask;
+let watchPort;
+let watchIdentity;
+let watchRetryAvailable = true;
+
 let inFlight;
 
 function queue(operation) {
@@ -17,8 +25,8 @@ function queue(operation) {
   return completion;
 }
 
-function refresh() {
-  return inFlight ?? queue(sync);
+function refresh(freshAfter) {
+  return inFlight ?? queue(() => sync(typeof freshAfter === "number" ? freshAfter : undefined));
 }
 
 function failure(code, message) {
@@ -33,9 +41,24 @@ async function report(identity, attempt, started, state, detail) {
   }).catch(() => {});
 }
 
-async function sample(expected) {
-  const tab = await chrome.tabs.create({ url: "https://claude.ai/new", active: false });
+async function cleanInterruptedSample() {
+  const saved = await chrome.storage.local.get("quotaSignalSample");
+  const previous = saved.quotaSignalSample;
+  if (!previous) return;
   try {
+    const tab = await chrome.tabs.get(previous.id);
+    // A restored/reused tab ID must never cause a user's own tab to be closed.
+    if (tab.url?.includes("quota_signal_sample=" + previous.token)) await chrome.tabs.remove(previous.id);
+  } catch {}
+  await chrome.storage.local.remove("quotaSignalSample");
+}
+
+async function sample(expected) {
+  await cleanInterruptedSample();
+  const token = crypto.randomUUID();
+  const tab = await chrome.tabs.create({ url: "https://claude.ai/new?quota_signal_sample=" + token, active: false });
+  try {
+    await chrome.storage.local.set({ quotaSignalSample: { id: tab.id, token } });
     for (let attempt = 0; attempt < 20; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 1000));
       if (navigator.onLine === false) {
@@ -66,6 +89,7 @@ async function sample(expected) {
     throw failure("unavailable", "No verified Claude page was available before the refresh timed out.");
   } finally {
     if (tab.id != null) await chrome.tabs.remove(tab.id).catch(() => {});
+    await chrome.storage.local.remove("quotaSignalSample").catch(() => {});
   }
 }
 
@@ -89,7 +113,9 @@ async function deliver(pair, options = {}) {
     }
     await chrome.storage.local.set({ quotaSignalIdentity: {
       email: reading.email, workspace: reading.workspace, plan: reading.plan,
-    } });
+    }, quotaSignalLastSuccess: Date.now() });
+    await finishRecovery();
+    await ensureWatch();
     return reading;
   } catch (error) {
     await report(expected, attempt, started, error.code ?? "unavailable", error.message);
@@ -97,20 +123,120 @@ async function deliver(pair, options = {}) {
   }
 }
 
-async function sync() {
+async function sync(freshAfter) {
   try {
+    if (freshAfter != null) {
+      const saved = await chrome.storage.local.get("quotaSignalLastSuccess");
+      if (saved.quotaSignalLastSuccess >= freshAfter) return { ok: true };
+    }
     await deliver();
     await chrome.action.setBadgeText({ text: "" });
     await chrome.action.setTitle({ title: "Quota Signal · Claude Usage synced" });
+    return { ok: true };
   } catch (error) {
     await chrome.action.setBadgeText({ text: "!" });
     await chrome.action.setTitle({ title: "Quota Signal · " + error.message });
+    return { ok: false, code: error.code ?? "unavailable" };
   }
 }
 
 async function start() {
   if (!(await chrome.alarms.get(alarm))) await chrome.alarms.create(alarm, { periodInMinutes: 5 });
-  await refresh();
+  await ensureWatch();
+  await requestRecovery({ id: crypto.randomUUID(), at: Date.now() });
+}
+
+async function finishRecovery() {
+  await chrome.storage.local.remove("quotaSignalRecovery");
+  await chrome.alarms.clear(recoveryAlarm);
+}
+
+async function ensureWatch() {
+  const saved = await chrome.storage.local.get(["quotaSignalIdentity", "quotaSignalRecoverySignal"]);
+  if (!saved.quotaSignalIdentity) return;
+  const identity = JSON.stringify(saved.quotaSignalIdentity);
+  if (watchPort && watchIdentity === identity) return;
+  const previous = watchPort;
+  watchPort = undefined;
+  previous?.disconnect();
+  if (watchIdentity !== identity) watchRetryAvailable = true;
+  try {
+    const port = chrome.runtime.connectNative("local.quota_signal");
+    watchPort = port;
+    watchIdentity = identity;
+    port.onMessage.addListener(message => {
+      if (message.ready) watchRetryAvailable = true;
+      if (message.recovery && Number.isFinite(message.at)) {
+        void requestRecovery({ id: message.recovery, at: message.at });
+      }
+    });
+    port.onDisconnect.addListener(() => {
+      void chrome.runtime.lastError;
+      if (watchPort !== port) return;
+      watchPort = undefined;
+      // Allow one reconnect for a delayed first pairing or a lost established port.
+      if (watchRetryAvailable) {
+        watchRetryAvailable = false;
+        void chrome.alarms.create(watchAlarm, { delayInMinutes: 0.5 });
+      }
+    });
+    port.postMessage({ kind: "watch-recovery", identity: saved.quotaSignalIdentity,
+      since: saved.quotaSignalRecoverySignal });
+  } catch {
+    watchPort = undefined;
+  }
+}
+
+function requestRecovery(signal) {
+  if (recoveryTask) return recoveryTask;
+  recoveryTask = recover(signal).finally(() => { recoveryTask = undefined; });
+  return recoveryTask;
+}
+
+async function recover(signal) {
+  const now = Date.now();
+  const saved = await chrome.storage.local.get([
+    "quotaSignalRecovery", "quotaSignalRecoverySignal", "quotaSignalLastSuccess",
+  ]);
+  let job = saved.quotaSignalRecovery;
+  if (signal) {
+    if (signal.id === saved.quotaSignalRecoverySignal || now - signal.at > 120_000 || signal.at > now + 5000) return;
+    await chrome.storage.local.set({ quotaSignalRecoverySignal: signal.id });
+    if (now - (saved.quotaSignalLastSuccess ?? 0) < 30_000) return;
+    if (!job || now >= job.expires) {
+      job = { id: signal.id, created: now, attempts: 0, nextAt: now, expires: now + 300_000 };
+    }
+  }
+  if (!job) return;
+  if (saved.quotaSignalLastSuccess >= job.created || now >= job.expires) {
+    await finishRecovery();
+    return;
+  }
+  // Never reset the budget for another wake or network signal in the same five-minute window.
+  if (job.attempts >= 3) return;
+  if (job.nextAt > now) {
+    await chrome.alarms.create(recoveryAlarm, { when: job.nextAt });
+    return;
+  }
+  job.attempts += 1;
+  job.nextAt = now + 120_000;
+  await chrome.storage.local.set({ quotaSignalRecovery: job });
+  await chrome.alarms.create(recoveryAlarm, { when: job.nextAt });
+  const result = await refresh(job.created);
+  const completed = await chrome.storage.local.get("quotaSignalLastSuccess");
+  if (result?.ok || completed.quotaSignalLastSuccess >= job.created) {
+    await finishRecovery();
+    return;
+  }
+  if (!["network", "unavailable"].includes(result?.code) || job.attempts >= 3) {
+    job.attempts = 3;
+    await chrome.storage.local.set({ quotaSignalRecovery: job });
+    await chrome.alarms.clear(recoveryAlarm);
+    return;
+  }
+  job.nextAt = Date.now() + backoffs[job.attempts - 1];
+  await chrome.storage.local.set({ quotaSignalRecovery: job });
+  await chrome.alarms.create(recoveryAlarm, { when: job.nextAt });
 }
 
 const commandTasks = new Map();
@@ -131,7 +257,8 @@ async function executeCommand(command) {
     await deliver(null, { expected: request.expected, command });
     return { ok: true, expected: request.expected };
   } catch (error) {
-    return { error: error.message, expected: request.expected, reconnect: request.reconnect };
+    return { error: error.message, code: error.code ?? "unavailable",
+      expected: request.expected, reconnect: request.reconnect };
   }
 }
 
@@ -160,5 +287,29 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
 });
 chrome.runtime.onInstalled.addListener(start);
 chrome.runtime.onStartup.addListener(start);
-chrome.alarms.onAlarm.addListener(event => { if (event.name === alarm) void refresh(); });
+async function periodicRefresh(event) {
+  await ensureWatch();
+  const saved = await chrome.storage.local.get("quotaSignalRecovery");
+  if (saved.quotaSignalRecovery && Date.now() < saved.quotaSignalRecovery.expires) {
+    await requestRecovery();
+  } else if (Date.now() - event.scheduledTime > 30_000) {
+    await requestRecovery({ id: crypto.randomUUID(), at: Date.now() });
+  } else {
+    await refresh();
+  }
+}
+
+chrome.alarms.onAlarm.addListener(event => {
+  if (event.name === recoveryAlarm) { void requestRecovery(); return; }
+  if (event.name === watchAlarm) { void ensureWatch(); return; }
+  if (event.name === alarm) void periodicRefresh(event);
+});
+chrome.tabs.onUpdated.addListener((_, change, tab) => {
+  if (change.status !== "complete" || !tab.active || !tab.url) return;
+  const url = new URL(tab.url);
+  if (url.origin === "https://claude.ai" && !url.pathname.startsWith("/login")) {
+    void requestRecovery({ id: crypto.randomUUID(), at: Date.now() });
+  }
+});
+void ensureWatch();
 chrome.action.onClicked.addListener(refresh);

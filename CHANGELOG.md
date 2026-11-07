@@ -4,6 +4,13 @@
 
 ### Added
 
+- Wake, display-wake, resumed-session and restored-network recovery. Notification bursts are debounced for two seconds and coalesced within a 15-second cooldown.
+- Chrome companion 1.5.0 receives recovery signals through a local native messaging connection. Chrome startup, overdue alarms and returning Claude tabs also trigger recovery.
+- Per-profile recovery has a persisted maximum of three attempts within five minutes, with 30- and 90-second backoffs for network/unavailable failures. Authentication, layout and workspace mismatch failures stop the cycle.
+- Recovery shares the existing per-profile queue with scheduled refreshes, retries and reconnects. Fresh successful readings avoid redundant work. Interrupted sample tabs are tracked and cleaned up without closing unrelated tabs.
+- The optional embedded browser retries transient recovery failures using its existing reader. Local Claude Code token scans are requested on wake.
+- App polling and embedded refresh timers use common run-loop modes so menu tracking can continue receiving captured readings.
+
 - Dashboard reset rows now show time remaining alongside the exact local reset date and time, refreshing every 15 seconds. Expired cycles show **Awaiting new cycle** until a fresh reading arrives.
 - Account-specific **Retry now** and **Reconnect in Chrome…** actions in refresh details and dashboard context menus.
 - Chrome companion 1.4.0 accepts expiring, account-scoped commands, verifies the requested workspace, serializes concurrent jobs, and polls reconnect attempts while the user signs in.
@@ -24,6 +31,10 @@
 - Confirmed offline state or a failed credential-free connection probe is classified as a network error. An inconclusive timeout remains unavailable.
 
 ### Verification
+
+- Simulated macOS workspace notifications coalesced into one signal, and all four real accounts completed fresh Chrome recovery attempts. Verified native watcher shutdown when its port disconnects.
+- Regression checks cover duplicate triggers, exhausted retry budgets, exact backoffs, worker restart state, expired signals, authentication stops, session navigation, overdue alarms, periodic/backoff collisions and interrupted-tab cleanup.
+- Verification used injected workspace notifications and live account reads.
 
 - Verified all four live dashboard countdowns and added checks for minute rounding, reset expiry, missing readings, timezone formatting and both Bucharest daylight saving transitions.
 - Verified live retry and reconnect through the dedicated hello and dev Chrome profiles, including progress and successful status updates. Confirmed that a dev-only retry left the other three accounts’ refresh timestamps unchanged.

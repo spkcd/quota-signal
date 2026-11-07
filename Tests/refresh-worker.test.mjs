@@ -11,10 +11,18 @@ async function run(reading, options = {}) {
   const messages = [];
   const removed = [];
   const created = [];
-  let stored = options.target ?? target;
+  const alarms = [];
+  const events = {};
+  const ports = [];
+  let clock = options.now ?? Date.now();
+  const values = { quotaSignalIdentity: options.target ?? target, ...options.values };
+  let stored = values.quotaSignalIdentity;
   let expected;
   let injects = 0;
   const context = {
+    events, ports, URL,
+    advance: milliseconds => { clock += milliseconds; },
+    Date: class extends Date { static now() { return clock; } },
     binding: null, crypto: webcrypto, navigator: { onLine: options.online ?? true },
     setTimeout: callback => { callback(); }, readUsagePage() {},
     AbortSignal, fetch: async () => {
@@ -23,16 +31,29 @@ async function run(reading, options = {}) {
     },
     chrome: {
       storage: { local: {
-        get: async () => ({ quotaSignalIdentity: stored }),
-        set: async value => { stored = value.quotaSignalIdentity; },
+        get: async keys => Object.fromEntries((Array.isArray(keys) ? keys : [keys])
+          .filter(key => key in values).map(key => [key, values[key]])),
+        set: async value => { Object.assign(values, value); stored = values.quotaSignalIdentity; },
+        remove: async key => { delete values[key]; },
       } },
-      tabs: { create: async options => { created.push(options); return { id: 7 }; }, remove: async id => removed.push(id) },
+      tabs: { onUpdated: { addListener(listener) { events.updated = listener; } }, get: async () => options.previousTab ?? {},
+        create: async options => { created.push(options); return { id: 7 }; }, remove: async id => removed.push(id) },
       scripting: { executeScript: async args => {
         expected = args.args[0];
         injects++;
         return [{ result: reading }];
       } },
       runtime: {
+        connectNative: options.watch ? () => {
+          const port = {
+            onMessage: { addListener(listener) { port.receive = listener; } },
+            onDisconnect: { addListener(listener) { port.drop = listener; } },
+            postMessage(message) { port.initial = message; },
+            disconnect() { port.drop(); },
+          };
+          ports.push(port);
+          return port;
+        } : undefined,
         sendNativeMessage: async (_, message) => {
           messages.push(message);
           if (message.kind === "account-command") {
@@ -43,8 +64,8 @@ async function run(reading, options = {}) {
         getURL: value => "chrome-extension://test/" + value,
         onMessage: { addListener() {} }, onInstalled: { addListener() {} }, onStartup: { addListener() {} },
       },
-      alarms: { onAlarm: { addListener() {} } },
-      action: { onClicked: { addListener() {} } },
+      alarms: { create: async (name, info) => { alarms.push({ name, ...info }); }, clear: async () => {}, onAlarm: { addListener(listener) { events.alarm = listener; } } },
+      action: { setBadgeText: async () => {}, setTitle: async () => {}, onClicked: { addListener() {} } },
     },
   };
   vm.createContext(context);
@@ -52,7 +73,7 @@ async function run(reading, options = {}) {
   let error;
   let result;
   try { result = await vm.runInContext(options.expression ?? "deliver()", context); } catch (value) { error = value; }
-  return { messages, removed, created, stored, expected, injects, error, result };
+  return { messages, removed, created, stored, expected, injects, error, result, values, alarms, ports };
 }
 
 const success = await run({ ...target, percent: 30, reset: Date.now() / 1000 + 3600, offer: "Unknown" });
@@ -123,3 +144,120 @@ assert.equal(reconnect.created.filter(tab => tab.active === true).length, 1);
 assert.equal(reconnect.result.reconnect, true);
 assert.equal(reconnect.messages.filter(message => message.percent != null).length, 0);
 console.log("Retry/reconnect passed single-account targeting, command framing, duplicate requests, expiry, and reconnect polling.");
+
+const wakeID = "22222222-2222-4222-8222-222222222222";
+const wakeTime = 1_800_000_000_000;
+const recovered = await run({ ...target, percent: 30 }, {
+  now: wakeTime, expression: `requestRecovery({ id: "${wakeID}", at: Date.now() })`,
+});
+assert.equal(recovered.created.length, 1);
+assert.equal(recovered.values.quotaSignalRecovery, undefined);
+const bounded = await run({ code: "network", error: "Offline" }, {
+  now: wakeTime, expression: `(async () => {
+    await requestRecovery({ id: "${wakeID}", at: Date.now() });
+    advance(30000); await requestRecovery();
+    advance(90000); await requestRecovery();
+    await requestRecovery({ id: crypto.randomUUID(), at: Date.now() });
+    return requestRecovery();
+  })()`,
+});
+assert.equal(bounded.created.length, 3);
+assert.equal(bounded.values.quotaSignalRecovery.attempts, 3);
+assert.equal(bounded.alarms.some(alarm => alarm.when === wakeTime + 30000), true);
+assert.equal(bounded.alarms.some(alarm => alarm.when === wakeTime + 120000), true);
+const needsSignIn = await run({ code: "signedOut", error: "Sign in" }, {
+  now: wakeTime, expression: `(async () => {
+    await requestRecovery({ id: "${wakeID}", at: Date.now() });
+    advance(30000); await requestRecovery();
+  })()`,
+});
+assert.equal(needsSignIn.created.length, 1);
+const colliding = await run({ ...target, percent: 30 }, {
+  now: wakeTime, expression: `Promise.all([
+    requestRecovery({ id: "${wakeID}", at: Date.now() }),
+    requestRecovery({ id: "${wakeID}", at: Date.now() }),
+    refresh()
+  ])`,
+});
+assert.equal(colliding.created.length, 1);
+const resumed = await run({ code: "network", error: "Offline" }, {
+  now: wakeTime, values: { quotaSignalRecovery: {
+    id: wakeID, created: wakeTime - 30000, attempts: 1, nextAt: wakeTime, expires: wakeTime + 270000,
+  } },
+  expression: "requestRecovery()",
+});
+assert.equal(resumed.values.quotaSignalRecovery.attempts, 2);
+const expiredJob = await run({ ...target, percent: 30 }, {
+  now: wakeTime, values: { quotaSignalRecovery: {
+    id: wakeID, created: wakeTime - 400000, attempts: 1, nextAt: wakeTime, expires: wakeTime - 1,
+  } }, expression: "requestRecovery()",
+});
+assert.equal(expiredJob.created.length, 0);
+const oldSignal = await run({ ...target, percent: 30 }, {
+  now: wakeTime, expression: `requestRecovery({ id: "${wakeID}", at: Date.now() - 121000 })`,
+});
+assert.equal(oldSignal.created.length, 0);
+const oldTab = { id: 99, token: "interrupted" };
+const interrupted = await run({ ...target, percent: 30 }, {
+  values: { quotaSignalSample: oldTab },
+  previousTab: { url: "https://claude.ai/new?quota_signal_sample=interrupted" },
+});
+assert.deepEqual(interrupted.removed, [99, 7]);
+const reusedID = await run({ ...target, percent: 30 }, {
+  values: { quotaSignalSample: oldTab }, previousTab: { url: "https://claude.ai/new" },
+});
+assert.deepEqual(reusedID.removed, [7]);
+console.log("Wake recovery passed bounded backoffs, burst deduplication, sign-out stop, persisted budgets, expiry, and interrupted-tab cleanup.");
+
+const watcher = await run({ ...target, percent: 30 }, {
+  now: wakeTime, watch: true, expression: `(async () => {
+    await ensureWatch();
+    ports[0].receive({ ready: true });
+    ports[0].receive({ recovery: "${wakeID}", at: Date.now() });
+    return requestRecovery();
+  })()`,
+});
+assert.equal(watcher.ports.length, 1);
+assert.equal(watcher.ports[0].initial.kind, "watch-recovery");
+assert.equal(watcher.created.length, 1);
+const recoveredSession = await run({ ...target, percent: 30 }, {
+  now: wakeTime, expression: `(async () => {
+    events.updated(1, { status: "complete" }, { active: true, url: "https://claude.ai/new" });
+    return requestRecovery();
+  })()`,
+});
+assert.equal(recoveredSession.created.length, 1);
+const loginPage = await run({ ...target, percent: 30 }, {
+  now: wakeTime, expression: `events.updated(1, { status: "complete" }, { active: true, url: "https://claude.ai/login" })`,
+});
+assert.equal(loginPage.created.length, 0);
+const overdueAlarm = await run({ ...target, percent: 30 }, {
+  now: wakeTime, expression: `periodicRefresh({ scheduledTime: Date.now() - 60000 })`,
+});
+assert.equal(overdueAlarm.created.length, 1);
+console.log("Native watch, authenticated navigation, and overdue Chrome alarm entry points passed.");
+
+const periodicDuringBackoff = await run({ code: "network", error: "Offline" }, {
+  now: wakeTime, expression: `(async () => {
+    await requestRecovery({ id: "${wakeID}", at: Date.now() });
+    advance(10000);
+    return periodicRefresh({ scheduledTime: Date.now() });
+  })()`,
+});
+assert.equal(periodicDuringBackoff.created.length, 1);
+const periodicAfterBudget = await run({ code: "network", error: "Offline" }, {
+  now: wakeTime, values: { quotaSignalRecovery: {
+    id: wakeID, created: wakeTime - 120000, attempts: 3, nextAt: wakeTime, expires: wakeTime + 180000,
+  } }, expression: "periodicRefresh({ scheduledTime: Date.now() })",
+});
+assert.equal(periodicAfterBudget.created.length, 0);
+console.log("Periodic refreshes respect recovery backoff and exhausted budgets.");
+
+const delayedPairingWatch = await run({ ...target, percent: 30 }, {
+  watch: true, expression: `(async () => {
+    await ensureWatch(); ports[0].drop();
+    await ensureWatch(); ports[1].drop();
+  })()`,
+});
+assert.equal(delayedPairingWatch.alarms.filter(event => event.name === "quota-signal-watch").length, 1);
+console.log("Native watch reconnection is bounded when initial pairing is delayed or a host is unavailable.");

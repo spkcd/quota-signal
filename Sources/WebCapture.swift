@@ -106,25 +106,73 @@ enum WebCapture {
         let detail: String?
     }
 
+    private struct WatchPayload: Decodable {
+        let kind: String
+        let identity: WebIdentity
+        let since: UUID?
+    }
+
+    private struct WatchEvent: Encodable {
+        var ready: Bool?
+        var recovery: UUID?
+        var at: Double?
+    }
+
     static func run() {
-        let reply = (try? capture()) ?? Reply(ok: false)
-        let response = (try? JSONEncoder().encode(reply)) ?? Data(#"{"ok":false}"#.utf8)
+        guard let data = try? readPayload() else { emit(Reply(ok: false)); return }
+        if let watch = try? JSONDecoder().decode(WatchPayload.self, from: data), watch.kind == "watch-recovery" {
+            watchRecovery(watch)
+            return
+        }
+        emit((try? capture(data)) ?? Reply(ok: false))
+    }
+
+    private static func emit<T: Encodable>(_ value: T) {
+        let response = (try? JSONEncoder().encode(value)) ?? Data(#"{"ok":false}"#.utf8)
         var length = UInt32(response.count).littleEndian
         var frame = Data(bytes: &length, count: 4)
         frame.append(response)
         FileHandle.standardOutput.write(frame)
     }
 
-    private static func capture() throws -> Reply {
+    private static func readPayload() throws -> Data? {
         let input = FileHandle.standardInput
-        guard let prefix = try input.read(upToCount: 4), prefix.count == 4 else { return Reply(ok: false) }
+        guard let prefix = try input.read(upToCount: 4), prefix.count == 4 else { return nil }
         let length = Int(prefix.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(as: UInt32.self)) })
         guard (1...4096).contains(length),
-              let data = try input.read(upToCount: length), data.count == length else { return Reply(ok: false) }
+              let data = try input.read(upToCount: length), data.count == length else { return nil }
+        return data
+    }
+
+    private static func savedAccounts() throws -> [Account] {
         let defaults = UserDefaults.standard.persistentDomain(forName: "local.quota-signal.widget")
-        let accounts = try (defaults?["accounts"] as? Data).map {
+        return try (defaults?["accounts"] as? Data).map {
             try JSONDecoder().decode([Account].self, from: $0)
         } ?? []
+    }
+
+    private static func watchRecovery(_ watch: WatchPayload) {
+        guard watch.identity.isValid, let accounts = try? savedAccounts(),
+              accounts.contains(where: { $0.webIdentity == watch.identity }) else {
+            emit(Reply(ok: false))
+            return
+        }
+        emit(WatchEvent(ready: true))
+        var lastSignal = watch.since
+        var descriptor = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN | POLLHUP), revents: 0)
+        while true {
+            if let signal = RecoverySignal.recent(), signal.id != lastSignal {
+                lastSignal = signal.id
+                emit(WatchEvent(recovery: signal.id, at: signal.issued.timeIntervalSince1970 * 1000))
+            }
+            // The port's stdin closes with its Chrome profile. Exit without leaving a watcher behind.
+            let result = poll(&descriptor, 1, 2000)
+            if result != 0 { return }
+        }
+    }
+
+    private static func capture(_ data: Data) throws -> Reply {
+        let accounts = try savedAccounts()
         let now = Date.now
         if let control = try? JSONDecoder().decode(ControlPayload.self, from: data), control.kind == "account-command" {
             guard let request = ChromeAccountActions.pending(id: control.command),

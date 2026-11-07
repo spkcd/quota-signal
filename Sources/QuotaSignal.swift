@@ -10,6 +10,13 @@ final class FloatingPanel: NSPanel {
 final class WidgetController: NSObject, NSApplicationDelegate {
     private let store = UsageStore()
     private lazy var browserSync = BrowserSync(store: store)
+    private lazy var wakeRecovery = WakeRecovery { [weak self] in
+        guard let self, !self.store.demo else { return }
+        try? RecoverySignal.publish()
+        self.store.poll()
+        self.store.refreshLocalTokens(force: true)
+        self.browserSync.recover()
+    }
     private var panel: FloatingPanel!
     private var status: NSStatusItem!
     private let statusMenu = NSMenu()
@@ -95,9 +102,12 @@ final class WidgetController: NSObject, NSApplicationDelegate {
         if !args.contains("--demo"), !args.contains("--snapshot") {
             browserSync.start()
             store.refreshLocalTokens()
+            wakeRecovery.start()
         }
-        timer = Timer.scheduledTimer(timeInterval: 5, target: self,
-                                     selector: #selector(poll), userInfo: nil, repeats: true)
+        let pollTimer = Timer(timeInterval: 5, target: self,
+                              selector: #selector(poll), userInfo: nil, repeats: true)
+        RunLoop.main.add(pollTimer, forMode: .common)
+        timer = pollTimer
     }
 
     @objc private func showPanel() { panel.orderFrontRegardless() }
@@ -267,6 +277,10 @@ final class WidgetController: NSObject, NSApplicationDelegate {
         store.refreshLocalTokens()
     }
     @objc private func quit() { NSApp.terminate(nil) }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        wakeRecovery.stop()
+    }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         showPanel()
