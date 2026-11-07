@@ -9,41 +9,80 @@ function refresh() {
   return inFlight;
 }
 
-async function sample() {
+function failure(code, message) {
+  return Object.assign(new Error(message), { code });
+}
+
+async function report(identity, attempt, started, state, detail) {
+  if (!identity) return;
+  // Telemetry must not prevent a quota reading when an older native host is installed.
+  await chrome.runtime.sendNativeMessage("local.quota_signal", {
+    kind: "refresh-status", identity, attempt, started, state, detail,
+  }).catch(() => {});
+}
+
+async function sample(expected) {
   const tab = await chrome.tabs.create({ url: "https://claude.ai/new", active: false });
   try {
     for (let attempt = 0; attempt < 20; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 1000));
+      if (navigator.onLine === false) {
+        throw failure("network", "The browser reports that it is offline.");
+      }
       let result;
       try {
         const [frame] = await chrome.scripting.executeScript({
-          target: { tabId: tab.id }, func: readUsagePage, args: [null],
+          target: { tabId: tab.id }, func: readUsagePage, args: [expected],
         });
         result = frame.result;
       } catch {
         continue;
       }
-      if (result?.error) throw new Error(result.error);
+      if (result?.error) throw failure(result.code ?? "unavailable", result.error);
       if (result) return result;
     }
-    throw new Error("Sign in to Claude in this Chrome profile, then try again.");
+    try {
+      // A credential-free probe distinguishes a failed connection from a page that could not be parsed.
+      await fetch("https://claude.ai/new", {
+        method: "HEAD", credentials: "omit", redirect: "manual", signal: AbortSignal.timeout(5000),
+      });
+    } catch (error) {
+      if (error.name !== "TimeoutError" && error.name !== "AbortError") {
+        throw failure("network", "The browser could not connect to Claude.");
+      }
+    }
+    throw failure("unavailable", "No verified Claude page was available before the refresh timed out.");
   } finally {
     if (tab.id != null) await chrome.tabs.remove(tab.id).catch(() => {});
   }
 }
 
 async function deliver(pair) {
-  const reading = await sample();
-  const legacy = binding && reading.email === binding.email &&
-    reading.workspace === binding.workspace && reading.plan === "Ultra";
-  const reply = await chrome.runtime.sendNativeMessage("local.quota_signal", {
-    ...reading, pair, account: legacy ? binding.account : undefined,
-  });
-  if (pair && reply?.alreadyConnected) return null;
-  if (!reply?.ok) {
-    throw new Error(pair ? "Open + in Quota Signal again and retry setup." : "Connect this workspace using + in Quota Signal.");
+  const saved = await chrome.storage.local.get("quotaSignalIdentity");
+  // Pairing deliberately discovers a new workspace. Scheduled refreshes verify their saved target.
+  const expected = pair ? null : saved.quotaSignalIdentity ?? null;
+  const attempt = crypto.randomUUID();
+  const started = Date.now() / 1000;
+  await report(expected, attempt, started, "refreshing");
+  try {
+    const reading = await sample(expected);
+    const legacy = binding && reading.email === binding.email &&
+      reading.workspace === binding.workspace && reading.plan === "Ultra";
+    const reply = await chrome.runtime.sendNativeMessage("local.quota_signal", {
+      ...reading, pair, attempt, started, account: legacy ? binding.account : undefined,
+    });
+    if (pair && reply?.alreadyConnected) return null;
+    if (!reply?.ok) {
+      throw failure("unavailable", pair ? "Open + in Quota Signal again and retry setup." : "Connect this workspace using + in Quota Signal.");
+    }
+    await chrome.storage.local.set({ quotaSignalIdentity: {
+      email: reading.email, workspace: reading.workspace, plan: reading.plan,
+    } });
+    return reading;
+  } catch (error) {
+    await report(expected, attempt, started, error.code ?? "unavailable", error.message);
+    throw error;
   }
-  return reading;
 }
 
 async function sync() {

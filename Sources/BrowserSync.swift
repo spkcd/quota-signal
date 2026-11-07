@@ -2,7 +2,7 @@ import AppKit
 import WebKit
 
 @MainActor
-final class BrowserSync: NSObject, NSWindowDelegate {
+final class BrowserSync: NSObject, NSWindowDelegate, WKNavigationDelegate {
     private struct Binding: Decodable {
         let account: UUID
         let email: String
@@ -17,6 +17,7 @@ final class BrowserSync: NSObject, NSWindowDelegate {
     private var reader: WKWebView?
     private var timer: Timer?
     private var refreshTask: Task<Void, Never>?
+    private var navigationFailure: RefreshStatus.State?
 
     init(store: UsageStore) {
         self.store = store
@@ -82,11 +83,18 @@ final class BrowserSync: NSObject, NSWindowDelegate {
         guard refreshTask == nil, let binding, let script, !store.demo else { return }
         refreshTask = Task {
             defer { refreshTask = nil }
+            let attempt = UUID()
+            let started = Date.now
+            store.recordRefresh(for: binding.account, attempt: attempt, started: started, state: .refreshing)
             do {
                 try await read(binding, script: script)
+                store.recordRefresh(for: binding.account, attempt: attempt, started: started, state: .success)
             } catch is CancellationError {
                 return
             } catch {
+                let state = (error as? SyncError)?.state ?? .unavailable
+                store.recordRefresh(for: binding.account, attempt: attempt, started: started, state: state,
+                                    message: (error as? SyncError)?.message)
                 if showErrors { inform("Claude usage could not refresh", error.localizedDescription) }
             }
         }
@@ -95,11 +103,13 @@ final class BrowserSync: NSObject, NSWindowDelegate {
     private func read(_ binding: Binding, script: String) async throws {
         let browser = reader ?? makeBrowser()
         reader = browser
+        navigationFailure = nil
         var request = URLRequest(url: Self.home)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         browser.load(request)
         for _ in 0..<20 {
             try await Task.sleep(for: .seconds(1))
+            if let navigationFailure { throw SyncError(message: "Claude navigation failed.", state: navigationFailure) }
             guard !browser.isLoading, browser.url?.host == "claude.ai" else { continue }
             let value = try await browser.callAsyncJavaScript(
                 script + "\nreturn (await readUsagePage(expected)) ?? null;",
@@ -107,17 +117,19 @@ final class BrowserSync: NSObject, NSWindowDelegate {
                 in: nil, contentWorld: .defaultClient
             )
             guard let sample = value as? [String: Any] else { continue }
-            if let error = sample["error"] as? String { throw SyncError(message: error) }
+            if let error = sample["error"] as? String {
+                throw SyncError(message: error, state: (sample["code"] as? String).flatMap(RefreshStatus.State.init(rawValue:)) ?? .unavailable)
+            }
             guard let percent = sample["percent"] as? Double, (0...100).contains(percent),
                   let reset = sample["reset"] as? Double, sample["email"] as? String == binding.email,
                   store.accounts.contains(where: { $0.id == binding.account &&
-                      $0.name.caseInsensitiveCompare(binding.email) == .orderedSame }) else {
-                throw SyncError(message: "The usage reading did not match the configured account.")
+                      ($0.webIdentity?.email ?? $0.name).caseInsensitiveCompare(binding.email) == .orderedSame }) else {
+                throw SyncError(message: "The usage reading did not match the configured account.", state: .mismatch)
             }
             let now = Date.now
             let resetDate = Date(timeIntervalSince1970: reset)
             guard resetDate > now, resetDate.timeIntervalSince(now) <= Reading.week + 3600 else {
-                throw SyncError(message: "Claude did not provide a valid weekly reset time.")
+                throw SyncError(message: "Claude did not provide a valid weekly reset time.", state: .layout)
             }
             let offer = (sample["offer"] as? String).flatMap(ResetOffer.init(rawValue:))
             try Bridge.write(Reading(observed: now, reset: resetDate, percent: percent,
@@ -125,13 +137,27 @@ final class BrowserSync: NSObject, NSWindowDelegate {
             store.poll()
             return
         }
-        throw SyncError(message: "Sign in to Claude inside Quota Signal and select the configured Ultra workspace.")
+        throw SyncError(message: "No verified Claude reading was available before the refresh timed out.")
     }
 
     private func makeBrowser() -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
-        return WKWebView(frame: NSRect(x: 0, y: 0, width: 1080, height: 760), configuration: configuration)
+        let browser = WKWebView(frame: NSRect(x: 0, y: 0, width: 1080, height: 760), configuration: configuration)
+        browser.navigationDelegate = self
+        return browser
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        let code = (error as NSError).code
+        guard webView === reader, code != NSURLErrorCancelled else { return }
+        let networkCodes = [NSURLErrorNotConnectedToInternet, NSURLErrorCannotFindHost, NSURLErrorCannotConnectToHost,
+                            NSURLErrorNetworkConnectionLost, NSURLErrorTimedOut, NSURLErrorDNSLookupFailed]
+        navigationFailure = networkCodes.contains(code) ? .network : .unavailable
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        self.webView(webView, didFailProvisionalNavigation: navigation, withError: error)
     }
 
     private func inform(_ title: String, _ message: String) {
@@ -144,6 +170,7 @@ final class BrowserSync: NSObject, NSWindowDelegate {
 
     private struct SyncError: LocalizedError {
         let message: String
+        var state: RefreshStatus.State = .unavailable
         var errorDescription: String? { message }
     }
 }

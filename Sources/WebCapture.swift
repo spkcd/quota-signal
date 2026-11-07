@@ -13,6 +13,8 @@ struct WebIdentity: Codable, Equatable {
 
 enum WebCapture {
     private struct Payload: Decodable {
+        let attempt: UUID?
+        let started: Double?
         let account: UUID?
         let pair: UUID?
         let email: String
@@ -75,6 +77,15 @@ enum WebCapture {
         var alreadyConnected: Bool?
     }
 
+    private struct StatusPayload: Decodable {
+        let kind: String
+        let identity: WebIdentity
+        let attempt: UUID
+        let started: Double
+        let state: RefreshStatus.State
+        let detail: String?
+    }
+
     static func run() {
         let reply = (try? capture()) ?? Reply(ok: false)
         let response = (try? JSONEncoder().encode(reply)) ?? Data(#"{"ok":false}"#.utf8)
@@ -90,12 +101,26 @@ enum WebCapture {
         let length = Int(prefix.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(as: UInt32.self)) })
         guard (1...4096).contains(length),
               let data = try input.read(upToCount: length), data.count == length else { return Reply(ok: false) }
-        let message = try JSONDecoder().decode(Payload.self, from: data)
         let defaults = UserDefaults.standard.persistentDomain(forName: "local.quota-signal.widget")
         let accounts = try (defaults?["accounts"] as? Data).map {
             try JSONDecoder().decode([Account].self, from: $0)
         } ?? []
         let now = Date.now
+        if let status = try? JSONDecoder().decode(StatusPayload.self, from: data) {
+            guard status.kind == "refresh-status", status.identity.isValid,
+                  status.state != .success,
+                  status.started.isFinite, abs(now.timeIntervalSince1970 - status.started) <= 600,
+                  let account = accounts.first(where: { $0.webIdentity == status.identity }) else {
+                return Reply(ok: false)
+            }
+            try RefreshStatus.write(.init(attempt: status.attempt,
+                                           started: Date(timeIntervalSince1970: status.started),
+                                           updated: now, source: .chrome, state: status.state,
+                                           message: status.detail.map { String($0.prefix(512)) }),
+                                    for: account.id)
+            return Reply(ok: true)
+        }
+        let message = try JSONDecoder().decode(Payload.self, from: data)
         let reset = Date(timeIntervalSince1970: message.reset)
         guard (0...100).contains(message.percent), reset > now,
               reset.timeIntervalSince(now) <= Reading.week + 3600 else { return Reply(ok: false) }
@@ -120,6 +145,13 @@ enum WebCapture {
         }
         guard let existing else { return Reply(ok: false) }
         try Bridge.write(reading, for: existing.id)
+        let started = message.started.flatMap { value -> Date? in
+            guard value.isFinite, abs(now.timeIntervalSince1970 - value) <= 600 else { return nil }
+            return Date(timeIntervalSince1970: value)
+        } ?? now
+        try RefreshStatus.write(.init(attempt: message.attempt ?? UUID(), started: started,
+                                       updated: now, source: .chrome, state: .success, lastSuccess: now),
+                                for: existing.id)
         return Reply(ok: true)
     }
 }

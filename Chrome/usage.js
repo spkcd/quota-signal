@@ -17,26 +17,27 @@ export async function readUsagePage(expected) {
     return { workspace: normalize(name), plan: normalize(plan) };
   };
   if (location.origin !== "https://claude.ai") return;
-  if (location.pathname === "/login") return { error: "Waiting for Claude sign-in." };
+  if (navigator.onLine === false) return { code: "network", error: "The browser is offline." };
+  if (location.pathname === "/login") return { code: "signedOut", error: "Claude sign-in is required." };
   if (!workspace()) return;
   const { workspace: workspaceName, plan } = identity();
-  if (!workspaceName || !plan) return { error: "Claude workspace is unavailable" };
+  if (!workspaceName || !plan) return { code: "layout", error: "Claude workspace is unavailable" };
   if (expected && (workspaceName !== expected.workspace || plan !== (expected.plan ?? "Ultra"))) {
-    return { error: "Select the configured Claude workspace" };
+    return { code: "mismatch", error: "Select the configured Claude workspace" };
   }
   workspace().click();
   const menu = await waitFor(() => {
     const id = workspace()?.getAttribute("aria-controls");
     return id && document.getElementById(id);
   });
-  if (!menu) return { error: "Claude account menu unavailable" };
+  if (!menu) return { code: "layout", error: "Claude account menu unavailable" };
   const emails = menu.innerText.split("\n").map(line => line.trim().toLowerCase())
     .filter(line => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(line));
   if (emails.length !== 1 || (expected && emails[0] !== expected.email)) {
-    return { error: "Claude account does not match" };
+    return { code: "mismatch", error: "Claude account does not match" };
   }
   const usage = menu.querySelector('[data-testid="user-menu-usage"]');
-  if (!usage) return { error: "Claude Usage menu unavailable" };
+  if (!usage) return { code: "layout", error: "Claude Usage menu unavailable" };
   usage.click();
 
   const meter = await waitFor(() => [...document.querySelectorAll('[role="meter"]')].find(element => {
@@ -46,7 +47,7 @@ export async function readUsagePage(expected) {
     return name === "This week" || name === "Weekly limit · All models";
   }));
   if (!meter || location.hash !== "#settings/usage" || identity().workspace !== workspaceName || identity().plan !== plan) {
-    return { error: "The verified workspace's weekly meter was unavailable" };
+    return { code: "layout", error: "The verified workspace's weekly meter was unavailable" };
   }
   const label = document.getElementById(meter.getAttribute("aria-labelledby"));
   let row = meter.parentElement;
@@ -57,7 +58,7 @@ export async function readUsagePage(expected) {
   const percent = Number(value);
   if (!reset || !value || !Number.isFinite(percent) || percent < 0 || percent > 100 ||
       Number(reset[2]) < 1 || Number(reset[2]) > 12 || Number(reset[3]) > 59) {
-    return { error: "Claude changed the format of its weekly usage page" };
+    return { code: "layout", error: "Claude changed the format of its weekly usage page" };
   }
   const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const now = new Date();
@@ -69,4 +70,3 @@ export async function readUsagePage(expected) {
   const offer = offerText.includes("No resets right now") ? "None available" : "Unknown";
   return { percent, reset: date.getTime() / 1000, email: emails[0], workspace: workspaceName, plan, offer };
 }
-

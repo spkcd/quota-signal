@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import SwiftUI
 
 enum ResetOffer: String, Codable, CaseIterable, Identifiable {
@@ -86,6 +87,8 @@ enum Bridge {
         guard reset > now, reset.timeIntervalSince(now) <= Reading.week + 3600 else { return }
         let reading = Reading(observed: now, reset: reset, percent: week.used_percentage, fromCode: true)
         try write(reading, for: id)
+        try RefreshStatus.write(.init(attempt: UUID(), started: now, updated: now,
+                                       source: .code, state: .success, lastSuccess: now), for: id)
         print("Weekly " + week.used_percentage.formatted(.number.precision(.fractionLength(0...1))) + "%")
     }
 
@@ -134,11 +137,16 @@ final class UsageStore: ObservableObject {
     @Published var selected: UUID?
     @Published var showingDetail = false
     @Published private(set) var demo = false
+    @Published private var signedInClaudeCodeEmail: String?
+    private var checkingClaudeCodeSignIn = false
+    private var lastClaudeCodeSignInCheck = Date.distantPast
     private let defaults = UserDefaults.standard
     private let claudeCodeTokens = ClaudeCodeTokens()
     @Published private var localTokenTotals: [UUID: ClaudeCodeTokens.Counts] = [:]
     @Published private var linkedTokenEmails: Set<String>?
     @Published private(set) var localTokenScanCompletedAt: Date?
+    @Published private var refreshStatuses: [UUID: [RefreshStatus]] = [:]
+    @Published private var chromeRunning = true
     private var tokenQueries: [ClaudeCodeTokens.Query] = []
     private var tokenTask: Task<Void, Never>?
     private var lastTokenScan = Date.distantPast
@@ -184,6 +192,7 @@ final class UsageStore: ObservableObject {
 
     func poll() {
         guard !demo else { return }
+        refreshClaudeCodeSignIn()
         if let result = WebCapture.pendingConnection() {
             var account = accounts.first { $0.webIdentity == result.identity || $0.id == result.account }
                 ?? Account(id: result.account, name: result.identity.email + " · " + result.identity.workspace)
@@ -215,10 +224,80 @@ final class UsageStore: ObservableObject {
             accounts = updated
             persist()
         }
+        let statuses = Dictionary(uniqueKeysWithValues: accounts.map { account in
+            (account.id, [RefreshStatus.Source.chrome, .embedded, .code].compactMap {
+                RefreshStatus.read(for: account.id, source: $0)
+            })
+        })
+        if statuses != refreshStatuses { refreshStatuses = statuses }
+        let running = NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.google.Chrome" }
+        if chromeRunning != running { chromeRunning = running }
+    }
+
+    struct RefreshDetails {
+        let title: String
+        let source: String
+        let attempt: Date?
+        let success: Date?
+        let error: String?
+    }
+
+    func refreshDetails(for account: Account, now: Date = .now) -> RefreshDetails {
+        if demo {
+            return .init(title: "Sample refresh", source: "Demo data", attempt: now, success: now, error: nil)
+        }
+        let status = refreshStatuses[account.id]?.max { $0.started < $1.started }
+        let latest = account.latest
+        let success = ((refreshStatuses[account.id] ?? []).compactMap(\.lastSuccess) + [latest?.observed].compactMap { $0 }).max()
+        let readingSource = latest.map {
+            $0.backgroundWeb == true ? "Claude background" : $0.fromWeb == true ? "Chrome companion" :
+                $0.fromCode ? "Claude Code status line" : "Manual"
+        } ?? "Unknown"
+        let source = status?.source.label ?? readingSource
+        if !chromeRunning, (status?.source == .chrome || (status == nil && latest?.fromWeb == true && latest?.backgroundWeb != true)) {
+            return .init(title: "Browser closed", source: source, attempt: status?.started,
+                         success: success, error: "Google Chrome is closed. Open Chrome to resume companion refreshes.")
+        }
+        guard let status else {
+            return .init(title: "Attempt status unavailable", source: source, attempt: nil,
+                         success: success, error: nil)
+        }
+        let state = status.state == .refreshing && now.timeIntervalSince(status.started) > 120
+            ? RefreshStatus.State.unavailable : status.state
+        let title = state == .success && success.map({ now.timeIntervalSince($0) >= 900 }) == true
+            ? "Refresh overdue" : state.label
+        return .init(title: title, source: source, attempt: status.started, success: success,
+                     error: status.state == .refreshing ? state.detail : status.message ?? state.detail)
+    }
+
+    func recordRefresh(for id: UUID, attempt: UUID, started: Date, state: RefreshStatus.State, message: String? = nil) {
+        guard !demo, accounts.contains(where: { $0.id == id }) else { return }
+        try? RefreshStatus.write(.init(attempt: attempt, started: started, updated: .now,
+                                       source: .embedded, state: state,
+                                       lastSuccess: state == .success ? .now : nil, message: message), for: id)
+        poll()
     }
 
     private func tokenEmail(for account: Account) -> String {
         (account.webIdentity?.email ?? account.name).lowercased()
+    }
+
+    var activeClaudeCodeAccountID: UUID? {
+        guard !demo, let signedInClaudeCodeEmail else { return nil }
+        let matches = accounts.filter { tokenEmail(for: $0) == signedInClaudeCodeEmail }
+        return matches.count == 1 ? matches.first?.id : nil
+    }
+
+    private func refreshClaudeCodeSignIn() {
+        guard !checkingClaudeCodeSignIn,
+              Date.now.timeIntervalSince(lastClaudeCodeSignInCheck) >= 15 else { return }
+        checkingClaudeCodeSignIn = true
+        lastClaudeCodeSignInCheck = .now
+        Task {
+            let email = await Task.detached(priority: .utility) { ClaudeCodeTokens.signedInEmail() }.value
+            if signedInClaudeCodeEmail != email { signedInClaudeCodeEmail = email }
+            checkingClaudeCodeSignIn = false
+        }
     }
 
     func localTokenStatus(for account: Account) -> LocalTokenStatus {

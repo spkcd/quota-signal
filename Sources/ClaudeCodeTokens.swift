@@ -1,6 +1,40 @@
 import Foundation
 
 actor ClaudeCodeTokens {
+    static func signedInEmail() -> String? {
+        struct AuthStatus: Decodable {
+            let loggedIn: Bool
+            let authMethod: String?
+            let email: String?
+        }
+
+        let files = FileManager.default
+        let home = files.homeDirectoryForCurrentUser.path
+        // Finder and login items may launch with a minimal PATH.
+        let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        let directories = path.split(separator: ":").map(String.init)
+            + ["\(home)/.local/bin", "\(home)/.claude/local", "/opt/homebrew/bin", "/usr/local/bin"]
+        guard let executable = directories.map({ URL(fileURLWithPath: $0).appending(path: "claude") })
+            .first(where: { files.isExecutableFile(atPath: $0.path) }) else { return nil }
+
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = executable
+        process.arguments = ["auth", "status", "--json"]
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = directories.joined(separator: ":")
+        process.environment = environment
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return nil }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              let status = try? JSONDecoder().decode(AuthStatus.self, from: data),
+              status.loggedIn, status.authMethod == "claude.ai" else { return nil }
+        return status.email?.lowercased()
+    }
+
     struct Counts: Sendable {
         var input: Int64 = 0
         var output: Int64 = 0

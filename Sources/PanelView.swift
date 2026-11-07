@@ -77,6 +77,7 @@ struct PanelView: View {
     var hide: () -> Void
     var addAccount: () -> Void
     @ViewState private var editor: Account?
+    @ViewState private var showingRefreshDetails = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -199,6 +200,8 @@ struct PanelView: View {
             ?? (latest == nil ? "Reset unknown" : "Awaiting new cycle")
         let tokenStatus = store.localTokenStatus(for: account)
         let tokenLabel = "Claude Code · " + tokenStatus.label
+        let isActive = store.activeClaudeCodeAccountID == account.id
+        let refresh = store.refreshDetails(for: account, now: row.now)
         return Button {
             store.select(account.id)
             store.showingDetail = true
@@ -213,14 +216,25 @@ struct PanelView: View {
                             .foregroundStyle(row.isStale ? Instrument.warning : Instrument.muted)
                     }
                     Spacer(minLength: 4)
-                    Text(percent.map(Instrument.percentage) ?? "—")
-                        .font(.system(size: 19, weight: .medium, design: .monospaced))
-                        .foregroundStyle(Instrument.usageColor(percent))
+                    VStack(alignment: .trailing, spacing: 3) {
+                        Text(percent.map(Instrument.percentage) ?? "—")
+                            .font(.system(size: 19, weight: .medium, design: .monospaced))
+                            .foregroundStyle(Instrument.usageColor(percent))
+                        if isActive {
+                            Text("Active").font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(Instrument.signal)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(Instrument.signal.opacity(0.12), in: Capsule())
+                        }
+                    }
                     Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(Instrument.muted).accessibilityHidden(true)
                 }
                 if !store.demo {
                     Text(tokenLabel).font(.system(size: 11)).foregroundStyle(Instrument.muted)
+                    Text(refresh.title).font(.system(size: 11))
+                        .foregroundStyle(refresh.error == nil ? Instrument.muted : Instrument.warning)
+                        .help(refreshDescription(refresh))
                 }
             }
             .padding(.horizontal, 11)
@@ -232,7 +246,8 @@ struct PanelView: View {
         .buttonStyle(.plain)
         .accessibilityLabel(account.name)
         .accessibilityValue((percent.map { Instrument.percentage($0) + " weekly usage" } ?? "Usage unavailable")
-                            + ". " + reset + ". " + row.freshness + (store.demo ? "" : ". " + tokenLabel))
+                            + ". " + reset + ". " + row.freshness + (store.demo ? "" : ". " + tokenLabel)
+                            + (isActive ? ". Active in Claude Code" : "") + ". " + refreshDescription(refresh))
         .help(latest.map { "Last updated " + $0.observed.formatted(date: .abbreviated, time: .shortened) }
               ?? row.freshness)
     }
@@ -285,7 +300,7 @@ struct PanelView: View {
                            tokenScanCompletedAt: store.demo || expired ? nil : store.localTokenScanCompletedAt)
                 resetRows(account, now: context.date, expired: expired)
                 Spacer(minLength: 0)
-                footer(latest)
+                footer(account)
             }
         }
     }
@@ -322,19 +337,23 @@ struct PanelView: View {
         .font(.system(size: 12))
     }
 
-    private func footer(_ latest: Reading?) -> some View {
-        HStack(spacing: 6) {
-            Circle().fill(latest == nil ? Instrument.muted : Instrument.signal).frame(width: 5, height: 5)
-                .accessibilityHidden(true)
-            if let latest {
-                Text(store.demo ? "Sample readings" :
-                    (latest.backgroundWeb == true ? "Claude background" : latest.fromWeb == true ? "Claude web" : latest.fromCode ? "Claude Code" : "Manual") + " · " + latest.observed.formatted(
-                        .dateTime.month(.abbreviated).day().hour().minute()))
-                    .lineLimit(1)
-                    .help("Last reading " + latest.observed.formatted())
-            } else {
-                Text("No readings yet")
+    private func footer(_ account: Account) -> some View {
+        let refresh = store.refreshDetails(for: account)
+        return HStack(spacing: 6) {
+            Button {
+                showingRefreshDetails = true
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "info.circle")
+                    Text(refresh.title).lineLimit(1)
+                }
             }
+            .buttonStyle(.borderless)
+            .popover(isPresented: $showingRefreshDetails) {
+                refreshPopover(account)
+            }
+            .accessibilityLabel("Refresh details. " + refresh.title)
+            .help(refreshDescription(refresh))
             Spacer()
             Link(destination: Instrument.settings) {
                 HStack(spacing: 4) {
@@ -346,6 +365,37 @@ struct PanelView: View {
         }
         .font(.system(size: 11))
         .foregroundStyle(Instrument.muted)
+    }
+
+    private func refreshDescription(_ details: UsageStore.RefreshDetails) -> String {
+        let format: (Date?) -> String = { $0?.formatted(date: .abbreviated, time: .standard) ?? "Not recorded" }
+        return details.title + ". Source " + details.source + ". Last attempt " + format(details.attempt)
+            + ". Last success " + format(details.success) + (details.error.map { ". " + $0 } ?? "")
+    }
+
+    private func refreshPopover(_ account: Account) -> some View {
+        TimelineView(.periodic(from: .now, by: 5)) { context in
+            let details = store.refreshDetails(for: account, now: context.date)
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Refresh status").font(.headline)
+                Text(account.name).font(.subheadline).textSelection(.enabled)
+                Text(details.title).fontWeight(.semibold)
+                    .foregroundStyle(details.error == nil ? Instrument.ink : Instrument.warning)
+                LabeledContent("Source", value: details.source)
+                LabeledContent("Last attempt", value: details.attempt?.formatted(date: .abbreviated, time: .standard) ?? "Not recorded")
+                LabeledContent("Last success", value: details.success?.formatted(date: .abbreviated, time: .standard) ?? "Not recorded")
+                if let error = details.error {
+                    Text(error).fixedSize(horizontal: false, vertical: true)
+                }
+                if details.attempt == nil && !store.demo {
+                    Text("Update and reload the Chrome companion to receive attempt details.")
+                        .foregroundStyle(Instrument.muted)
+                }
+            }
+            .font(.system(size: 12))
+            .padding(16).frame(width: 340)
+            .preferredColorScheme(.dark)
+        }
     }
 
     private func resetDate(_ reset: Date) -> String {

@@ -34,3 +34,21 @@ For an existing configured embedded-browser workspace, **Sign in with email for 
 1. The Chrome companion reads the current weekly all-model percentage and reset from Claude's Usage page. It verifies account identity before handing the result to the app through Chrome native messaging.
 2. Quota Signal stores recent observations on the Mac and uses them to render the current cycle. A new reset window starts a new chart.
 3. The independent Claude Code scan reads local transcripts and matches a verified session owner to the account email. Its input, output and cache counts explain local activity. The percentage and reset still come from quota readings.
+
+## Inspect refresh health
+
+On the dashboard, each account shows its refresh state. Open an account and click the info label at the bottom to view the last attempt, last success, source, and any reported error. Failed attempts preserve the last successful quota reading.
+
+**Sign-in needed** appears only after the browser displays Claude's login page. **Browser closed** means the Chrome application is not running. **Network error** requires an offline indication or a failed connection. A missing or changed usage control produces **Page layout changed**. Inconclusive timeouts are **Refresh unavailable**. A successful refresh becomes **Refresh overdue** after 15 minutes without a new success.
+
+Companion 1.3.0 stores the last verified target in each Chrome profile and checks it during scheduled refreshes. Use **+** to pair a different workspace deliberately. Update the companion files and click **Reload** in Chrome's Extensions page to receive failure details. Before a profile's first successful refresh, historical readings still show their successful observation time, while attempt details may be unavailable.
+
+## Run refresh regression checks
+
+```sh
+node Tests/refresh-worker.test.mjs
+test_directory=$(mktemp -d)
+xcrun swiftc -swift-version 6 Sources/RefreshStatus.swift Tests/RefreshStatusTests.swift -o "$test_directory/check"
+QUOTA_SIGNAL_TEST_DIRECTORY="$test_directory/status" "$test_directory/check"
+rm -r "$test_directory"
+```

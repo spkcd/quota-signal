@@ -26,7 +26,7 @@ Three limitations set the order of work. Browser markup can change, Chrome profi
 
 | Work | Acceptance criteria | Depends on |
 | --- | --- | --- |
-| Per-account refresh status | Show last attempt, last success, source, and a concrete error when available. Confirmed signed-out state can display **Sign-in needed**. Browser closed, network error, and page layout changes each have separate states. | Structured companion results |
+| Per-account refresh status — completed 2026-11-07 | Dashboard states and account-detail popovers show last attempt, last success, source, and reported errors. Confirmed login pages show **Sign-in needed**. Browser closed, network, layout, workspace mismatch and timeout states are separate. Last successful quota survives failed refreshes. Verified live Chrome delivery and regression fixtures. | Companion 1.3.0; older companions retain reading timestamps until upgraded |
 | Retry and reconnect | Retry only the selected workspace and show progress. Route reconnect through the correct profile. Preserve the last good reading if a retry fails, and show when it becomes stale. | Profile-aware pairing and refresh status |
 | Short reset countdowns | Show time until reset alongside the exact time. At the scheduled reset, show that a new reading is pending. Test timezone changes and daylight saving transitions. | Current reset model |
 | Refresh after wake | Refresh shortly after wake and session recovery, with bounded retries and backoff. Prevent duplicate background tabs or requests when several triggers arrive together. | Per-profile refresh scheduling |
