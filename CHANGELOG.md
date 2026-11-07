@@ -4,6 +4,12 @@
 
 ### Added
 
+- Account-specific **Retry now** and **Reconnect in Chrome…** actions in refresh details and dashboard context menus.
+- Chrome companion 1.4.0 accepts expiring, account-scoped commands, verifies the requested workspace, serializes concurrent jobs, and polls reconnect attempts while the user signs in.
+- Verified Chrome profile routes are remembered after success. Reconnect offers a profile selector with the remembered route selected. Ambiguous first-time routes require a selection.
+- A one-time profile metadata import when macOS prevents direct discovery. Only profile names, directory identifiers and profile email labels are retained.
+- Legacy email-only accounts gain their workspace identity after a verified Chrome refresh so they can use retry and reconnect.
+
 - Per-account refresh indicators on the dashboard and a refresh details popover in account details, showing the last attempt, last success, source, and the available failure explanation.
 - Separate states for confirmed Claude sign-out, closed Chrome, connection failures, page layout changes, workspace mismatches, and unavailable or timed-out readings.
 - Persistent refresh metadata for Chrome, the embedded browser, and Claude Code status-line quota captures. Late replies preserve the newest attempt and successful readings survive failures.
@@ -18,6 +24,8 @@
 
 ### Verification
 
+- Verified live retry and reconnect through the dedicated hello and dev Chrome profiles, including progress and successful status updates. Confirmed that a dev-only retry left the other three accounts’ refresh timestamps unchanged.
+- Added command-targeting, duplicate-click, expiry, reconnect-polling and profile-routing regression checks.
 - Live native messaging refreshes recorded successful status for all four connected accounts.
 - Worker regression fixtures cover successful delivery, verified identity targeting, confirmed sign-out, offline and failed connections, layout errors, workspace mismatch, timeout, and native-host rejection.
 - Swift persistence fixtures cover out-of-order replies, retained success history, and account/source isolation.

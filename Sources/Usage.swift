@@ -211,6 +211,10 @@ final class UsageStore: ObservableObject {
         var changed = false
         for index in updated.indices {
             let account = updated[index]
+            if let identity = WebCapture.verifiedIdentity(for: account) {
+                updated[index].webIdentity = identity
+                changed = true
+            }
             guard let reading = Bridge.reading(for: account.id),
                   reading.observed > (account.latest?.observed ?? .distantPast) else { continue }
             updated[index].record(reading)

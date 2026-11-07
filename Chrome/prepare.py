@@ -21,7 +21,7 @@ account, = (item for item in accounts if item["name"].casefold() == email)
 
 destination = root / ".build/Claude Usage Chrome"
 destination.mkdir(exist_ok=True)
-for filename in ("manifest.json", "worker.js", "usage.js", "setup.html", "setup.js"):
+for filename in ("manifest.json", "worker.js", "usage.js", "setup.html", "setup.js", "command.html", "command.js"):
     shutil.copy2(root / "Chrome" / filename, destination / filename)
 binding = {"account": account["id"], "email": email, "workspace": workspace}
 (destination / "binding.js").write_text("export const binding = " + json.dumps(binding) + ";\n")

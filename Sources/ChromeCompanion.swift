@@ -10,7 +10,7 @@ enum ChromeCompanion {
         guard let resources = Bundle.main.resourceURL,
               let executable = Bundle.main.executableURL else { throw CocoaError(.fileNoSuchFile) }
         try files.createDirectory(at: companion, withIntermediateDirectories: true)
-        for name in ["manifest.json", "worker.js", "usage.js", "setup.html", "setup.js"] {
+        for name in ["manifest.json", "worker.js", "usage.js", "setup.html", "setup.js", "command.html", "command.js"] {
             let data = try Data(contentsOf: resources.appending(path: "Chrome").appending(path: name))
             try data.write(to: companion.appending(path: name), options: .atomic)
         }

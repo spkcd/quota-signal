@@ -4,9 +4,21 @@ import { readUsagePage } from "./usage.js";
 const alarm = "refresh-claude-usage";
 let inFlight;
 
+function queue(operation) {
+  const preceding = inFlight;
+  const task = (async () => {
+    await preceding?.catch(() => {});
+    return operation();
+  })();
+  const completion = task.finally(() => {
+    if (inFlight === completion) inFlight = undefined;
+  });
+  inFlight = completion;
+  return completion;
+}
+
 function refresh() {
-  inFlight ??= sync().finally(() => { inFlight = undefined; });
-  return inFlight;
+  return inFlight ?? queue(sync);
 }
 
 function failure(code, message) {
@@ -57,10 +69,10 @@ async function sample(expected) {
   }
 }
 
-async function deliver(pair) {
+async function deliver(pair, options = {}) {
   const saved = await chrome.storage.local.get("quotaSignalIdentity");
   // Pairing deliberately discovers a new workspace. Scheduled refreshes verify their saved target.
-  const expected = pair ? null : saved.quotaSignalIdentity ?? null;
+  const expected = options.expected ?? (pair ? null : saved.quotaSignalIdentity ?? null);
   const attempt = crypto.randomUUID();
   const started = Date.now() / 1000;
   await report(expected, attempt, started, "refreshing");
@@ -69,7 +81,7 @@ async function deliver(pair) {
     const legacy = binding && reading.email === binding.email &&
       reading.workspace === binding.workspace && reading.plan === "Ultra";
     const reply = await chrome.runtime.sendNativeMessage("local.quota_signal", {
-      ...reading, pair, attempt, started, account: legacy ? binding.account : undefined,
+      ...reading, pair, attempt, started, command: options.command, account: legacy ? binding.account : undefined,
     });
     if (pair && reply?.alreadyConnected) return null;
     if (!reply?.ok) {
@@ -101,18 +113,49 @@ async function start() {
   await refresh();
 }
 
+const commandTasks = new Map();
+const reconnectTabs = new Set();
+
+async function executeCommand(command) {
+  const request = await chrome.runtime.sendNativeMessage("local.quota_signal", {
+    kind: "account-command", command,
+  });
+  if (!request?.ok || !request.expected) {
+    return { error: "The request ended. Start Retry or Reconnect again in Quota Signal.", expired: true };
+  }
+  if (request.reconnect && !reconnectTabs.has(command)) {
+    reconnectTabs.add(command);
+    await chrome.tabs.create({ url: "https://claude.ai/new", active: true });
+  }
+  try {
+    await deliver(null, { expected: request.expected, command });
+    return { ok: true, expected: request.expected };
+  } catch (error) {
+    return { error: error.message, expected: request.expected, reconnect: request.reconnect };
+  }
+}
+
+function runCommand(command) {
+  if (commandTasks.has(command)) return commandTasks.get(command);
+  const completion = queue(() => executeCommand(command)).finally(() => {
+    commandTasks.delete(command);
+  });
+  commandTasks.set(command, completion);
+  return completion;
+}
+
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
-  if (sender.url?.split("#")[0] !== chrome.runtime.getURL("setup.html") ||
+  const senderPage = sender.url?.split("#")[0];
+  if (senderPage === chrome.runtime.getURL("command.html") && /^[a-f0-9-]{36}$/i.test(message?.command ?? "")) {
+    runCommand(message.command).then(reply, error => reply({ error: error.message }));
+    return true;
+  }
+  if (senderPage !== chrome.runtime.getURL("setup.html") ||
       !/^[a-f0-9-]{36}$/i.test(message?.pair ?? "")) return;
-  (async () => {
-    try {
-      await inFlight;
-      const reading = await deliver(message.pair);
-      reply(reading ? { ok: true, reading } : { alreadyConnected: true });
-    } catch (error) {
-      reply({ error: error.message });
-    }
-  })();
+  queue(() => deliver(message.pair)).then(
+    reading => reply(reading ? { ok: true, reading } : { alreadyConnected: true }),
+    error => reply({ error: error.message })
+  );
   return true;
 });
 chrome.runtime.onInstalled.addListener(start);

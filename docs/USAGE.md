@@ -41,7 +41,7 @@ On the dashboard, each account shows its refresh state. Open an account and clic
 
 **Sign-in needed** appears only after the browser displays Claude's login page. **Browser closed** means the Chrome application is not running. **Network error** requires an offline indication or a failed connection. A missing or changed usage control produces **Page layout changed**. Inconclusive timeouts are **Refresh unavailable**. A successful refresh becomes **Refresh overdue** after 15 minutes without a new success.
 
-Companion 1.3.0 stores the last verified target in each Chrome profile and checks it during scheduled refreshes. Use **+** to pair a different workspace deliberately. Update the companion files and click **Reload** in Chrome's Extensions page to receive failure details. Before a profile's first successful refresh, historical readings still show their successful observation time, while attempt details may be unavailable.
+Companion 1.4.0 stores the last verified target in each Chrome profile and checks it during scheduled refreshes. Use **+** to pair a different workspace deliberately. Update the companion files and click **Reload** in Chrome's Extensions page to receive failure details. Before a profile's first successful refresh, historical readings still show their successful observation time, while attempt details may be unavailable.
 
 ## Run refresh regression checks
 
@@ -50,5 +50,26 @@ node Tests/refresh-worker.test.mjs
 test_directory=$(mktemp -d)
 xcrun swiftc -swift-version 6 Sources/RefreshStatus.swift Tests/RefreshStatusTests.swift -o "$test_directory/check"
 QUOTA_SIGNAL_TEST_DIRECTORY="$test_directory/status" "$test_directory/check"
+rm -r "$test_directory"
+```
+
+## Retry one account or reconnect
+
+Open an account, click its refresh status at the bottom, and choose **Retry now**. You can also right-click its dashboard row and choose **Retry account**. The app opens an account refresh tab in the matching Chrome profile and checks that account's expected email and workspace. The status changes to **Refreshing…**, then records success or the available error. A failed attempt preserves the last quota reading.
+
+Choose **Reconnect in Chrome…** to select the profile for that account. The remembered, verified profile is selected initially. Confirm it or choose another, then sign in or select the expected workspace in the Claude tab that opens. Leave the account refresh tab open while signing in. It retries every five seconds until a verified reading is accepted or the request expires after 30 minutes. Ordinary retry requests expire after two minutes.
+
+The route is saved only after a successful reading matches the requested account. Reconnect never intentionally binds an account to a different Claude identity. If no route is remembered, a unique profile name matching the account email is suggested. Ambiguous profiles require a selection.
+
+If macOS prevents Quota Signal from reading Chrome's profile list, the first action asks you to select **Local State** from `~/Library/Application Support/Google/Chrome/`. The app retains only the parsed profile names, directory identifiers and email labels. This avoids requiring broad disk access. Older email-only Quota Signal accounts are upgraded with their verified workspace identity at their next successful Chrome refresh.
+
+Use companion **1.4.0** for these actions. Rerun **Set Up Chrome Companion…** to prepare the current files, then reload the extension in each dedicated Chrome profile.
+
+Run the profile routing checks with:
+
+```sh
+test_directory=$(mktemp -d)
+xcrun swiftc -swift-version 6 Sources/ChromeAccountActions.swift Sources/RefreshStatus.swift Tests/ChromeAccountActionsTests.swift -o "$test_directory/check"
+QUOTA_SIGNAL_TEST_DIRECTORY="$test_directory/state" "$test_directory/check"
 rm -r "$test_directory"
 ```

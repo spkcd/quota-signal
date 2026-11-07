@@ -76,6 +76,7 @@ struct PanelView: View {
     @ObservedObject var store: UsageStore
     var hide: () -> Void
     var addAccount: () -> Void
+    var accountAction: (Account, Bool) -> Void
     @ViewState private var editor: Account?
     @ViewState private var showingRefreshDetails = false
 
@@ -250,6 +251,12 @@ struct PanelView: View {
                             + (isActive ? ". Active in Claude Code" : "") + ". " + refreshDescription(refresh))
         .help(latest.map { "Last updated " + $0.observed.formatted(date: .abbreviated, time: .shortened) }
               ?? row.freshness)
+        .contextMenu {
+            Button("Retry account") { accountAction(account, false) }
+                .disabled(store.demo || account.webIdentity == nil)
+            Button("Reconnect in Chrome…") { accountAction(account, true) }
+                .disabled(store.demo || account.webIdentity == nil)
+        }
     }
 
     private func accountDetail(_ account: Account) -> some View {
@@ -389,6 +396,15 @@ struct PanelView: View {
                 }
                 if details.attempt == nil && !store.demo {
                     Text("Update and reload the Chrome companion to receive attempt details.")
+                        .foregroundStyle(Instrument.muted)
+                }
+                if !store.demo && account.webIdentity != nil {
+                    HStack(spacing: 12) {
+                        Button("Retry now") { accountAction(account, false) }
+                        Button("Reconnect in Chrome…") { accountAction(account, true) }
+                    }
+                    .disabled(details.title == RefreshStatus.State.refreshing.label)
+                    Text("Actions apply to this account. Reconnect opens Claude in its Chrome profile.")
                         .foregroundStyle(Instrument.muted)
                 }
             }

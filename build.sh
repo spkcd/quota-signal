@@ -13,7 +13,7 @@ else
     xcrun swiftc -O -swift-version 6 -target "$(uname -m)-apple-macosx14.0" Sources/*.swift -o "$binary"
 fi
 sed 's/^export async function/async function/' Chrome/usage.js > "$app/Contents/Resources/usage.js"
-cp Chrome/{manifest.json,worker.js,usage.js,setup.html,setup.js} "$app/Contents/Resources/Chrome/"
+cp Chrome/{manifest.json,worker.js,usage.js,setup.html,setup.js,command.html,command.js} "$app/Contents/Resources/Chrome/"
 cp Info.plist "$app/Contents/Info.plist"
 codesign --force --sign "${QUOTA_SIGNAL_SIGNING_IDENTITY:--}" "$app"
 printf '%s\n' "$app"

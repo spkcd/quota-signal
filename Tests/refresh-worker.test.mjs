@@ -10,6 +10,7 @@ const target = { email: "first@example.com", workspace: "Studio", plan: "Ultra" 
 async function run(reading, options = {}) {
   const messages = [];
   const removed = [];
+  const created = [];
   let stored = options.target ?? target;
   let expected;
   let injects = 0;
@@ -25,7 +26,7 @@ async function run(reading, options = {}) {
         get: async () => ({ quotaSignalIdentity: stored }),
         set: async value => { stored = value.quotaSignalIdentity; },
       } },
-      tabs: { create: async () => ({ id: 7 }), remove: async id => removed.push(id) },
+      tabs: { create: async options => { created.push(options); return { id: 7 }; }, remove: async id => removed.push(id) },
       scripting: { executeScript: async args => {
         expected = args.args[0];
         injects++;
@@ -34,6 +35,9 @@ async function run(reading, options = {}) {
       runtime: {
         sendNativeMessage: async (_, message) => {
           messages.push(message);
+          if (message.kind === "account-command") {
+            return { ok: !options.expired, expected: options.commandExpected ?? target, reconnect: options.reconnect ?? false };
+          }
           return { ok: options.nativeOK ?? true };
         },
         getURL: value => "chrome-extension://test/" + value,
@@ -46,8 +50,9 @@ async function run(reading, options = {}) {
   vm.createContext(context);
   vm.runInContext(source, context);
   let error;
-  try { await vm.runInContext("deliver()", context); } catch (value) { error = value; }
-  return { messages, removed, stored, expected, injects, error };
+  let result;
+  try { result = await vm.runInContext(options.expression ?? "deliver()", context); } catch (value) { error = value; }
+  return { messages, removed, created, stored, expected, injects, error, result };
 }
 
 const success = await run({ ...target, percent: 30, reset: Date.now() / 1000 + 3600, offer: "Unknown" });
@@ -90,3 +95,31 @@ for (const [pathname, online, expectedCode] of [
   assert.equal(result.code, expectedCode);
 }
 console.log("Refresh parser passed confirmed login page and offline state.");
+
+const commandID = "11111111-1111-4111-8111-111111111111";
+const otherTarget = { email: "second@example.com", workspace: "Personal", plan: "Ultra" };
+const retryOne = await run({ ...otherTarget, percent: 20 }, {
+  commandExpected: otherTarget, expression: `runCommand("${commandID}")`,
+});
+assert.equal(retryOne.expected.email, otherTarget.email);
+assert.equal(retryOne.messages.find(message => message.percent != null).command, commandID);
+assert.equal(retryOne.created.filter(tab => tab.active).length, 0);
+assert.equal(retryOne.result.ok, true);
+
+const duplicate = await run({ ...target, percent: 10 }, {
+  expression: `Promise.all([runCommand("${commandID}"), runCommand("${commandID}")])`,
+});
+assert.equal(duplicate.messages.filter(message => message.kind === "account-command").length, 1);
+assert.equal(duplicate.messages.filter(message => message.percent != null).length, 1);
+const expired = await run({ ...target, percent: 10 }, {
+  expired: true, expression: `runCommand("${commandID}")`,
+});
+assert.equal(expired.injects, 0);
+assert.equal(expired.result.expired, true);
+const reconnect = await run({ code: "signedOut", error: "Sign in to Claude" }, {
+  reconnect: true, expression: `(async () => { await runCommand("${commandID}"); return runCommand("${commandID}"); })()`,
+});
+assert.equal(reconnect.created.filter(tab => tab.active === true).length, 1);
+assert.equal(reconnect.result.reconnect, true);
+assert.equal(reconnect.messages.filter(message => message.percent != null).length, 0);
+console.log("Retry/reconnect passed single-account targeting, command framing, duplicate requests, expiry, and reconnect polling.");

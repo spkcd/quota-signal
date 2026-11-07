@@ -12,7 +12,20 @@ struct WebIdentity: Codable, Equatable {
 }
 
 enum WebCapture {
+    private static func identityFile(for id: UUID) -> URL {
+        Bridge.directory.appending(path: id.uuidString + ".identity.json")
+    }
+
+    static func verifiedIdentity(for account: Account) -> WebIdentity? {
+        guard account.webIdentity == nil,
+              let data = try? Data(contentsOf: identityFile(for: account.id)),
+              let identity = try? JSONDecoder().decode(WebIdentity.self, from: data),
+              identity.isValid, account.name.caseInsensitiveCompare(identity.email) == .orderedSame else { return nil }
+        return identity
+    }
+
     private struct Payload: Decodable {
+        let command: UUID?
         let attempt: UUID?
         let started: Double?
         let account: UUID?
@@ -75,6 +88,13 @@ enum WebCapture {
     private struct Reply: Encodable {
         let ok: Bool
         var alreadyConnected: Bool?
+        var expected: WebIdentity?
+        var reconnect: Bool?
+    }
+
+    private struct ControlPayload: Decodable {
+        let kind: String
+        let command: UUID
     }
 
     private struct StatusPayload: Decodable {
@@ -106,6 +126,13 @@ enum WebCapture {
             try JSONDecoder().decode([Account].self, from: $0)
         } ?? []
         let now = Date.now
+        if let control = try? JSONDecoder().decode(ControlPayload.self, from: data), control.kind == "account-command" {
+            guard let request = ChromeAccountActions.pending(id: control.command),
+                  accounts.contains(where: { $0.id == request.account && $0.webIdentity == request.identity }) else {
+                return Reply(ok: false)
+            }
+            return Reply(ok: true, expected: request.identity, reconnect: request.reconnect)
+        }
         if let status = try? JSONDecoder().decode(StatusPayload.self, from: data) {
             guard status.kind == "refresh-status", status.identity.isValid,
                   status.state != .success,
@@ -121,6 +148,8 @@ enum WebCapture {
             return Reply(ok: true)
         }
         let message = try JSONDecoder().decode(Payload.self, from: data)
+        let command = message.command.flatMap { ChromeAccountActions.pending(id: $0) }
+        if message.command != nil && command == nil { return Reply(ok: false) }
         let reset = Date(timeIntervalSince1970: message.reset)
         guard (0...100).contains(message.percent), reset > now,
               reset.timeIntervalSince(now) <= Reading.week + 3600 else { return Reply(ok: false) }
@@ -131,6 +160,9 @@ enum WebCapture {
             message.plan.map { WebIdentity(email: message.email, workspace: workspace, plan: $0) }
         }
         let existing = accounts.first { account in
+            if let command {
+                return account.id == command.account && account.webIdentity == identity && command.identity == identity
+            }
             if let paired = account.webIdentity { return paired == identity }
             return account.id == message.account &&
                 account.name.caseInsensitiveCompare(message.email) == .orderedSame
@@ -145,6 +177,9 @@ enum WebCapture {
         }
         guard let existing else { return Reply(ok: false) }
         try Bridge.write(reading, for: existing.id)
+        if existing.webIdentity == nil, let identity, identity.isValid {
+            try JSONEncoder().encode(identity).write(to: identityFile(for: existing.id), options: .atomic)
+        }
         let started = message.started.flatMap { value -> Date? in
             guard value.isFinite, abs(now.timeIntervalSince1970 - value) <= 600 else { return nil }
             return Date(timeIntervalSince1970: value)
@@ -152,6 +187,10 @@ enum WebCapture {
         try RefreshStatus.write(.init(attempt: message.attempt ?? UUID(), started: started,
                                        updated: now, source: .chrome, state: .success, lastSuccess: now),
                                 for: existing.id)
+        if let command {
+            UserDefaults.standard.set(command.profile, forKey: "chromeProfile." + existing.id.uuidString)
+            try? FileManager.default.removeItem(at: ChromeAccountActions.file(for: command.account))
+        }
         return Reply(ok: true)
     }
 }

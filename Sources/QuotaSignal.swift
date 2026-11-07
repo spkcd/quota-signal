@@ -23,7 +23,10 @@ final class WidgetController: NSObject, NSApplicationDelegate {
             store.showingDetail = args.contains("--demo-detail")
         }
         let view = PanelView(store: store, hide: { [weak self] in self?.panel.orderOut(nil) },
-                             addAccount: { [weak self] in self?.addAccountInChrome() })
+                             addAccount: { [weak self] in self?.addAccountInChrome() },
+                             accountAction: { [weak self] account, reconnect in
+                                 self?.openAccountAction(account, reconnect: reconnect)
+                             })
         panel = FloatingPanel(
             contentRect: NSRect(x: 0, y: 0, width: Instrument.width, height: Instrument.height),
             styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
@@ -178,6 +181,57 @@ final class WidgetController: NSObject, NSApplicationDelegate {
             let request = try WebCapture.beginPairing()
             let setup = URL(string: "chrome-extension://gjjgdcalfbbaphaebkfbkomodcejmina/setup.html#" + request.uuidString)!
             openInChrome(setup)
+        } catch {
+            NSAlert(error: error).runModal()
+        }
+    }
+
+    private func openAccountAction(_ account: Account, reconnect: Bool) {
+        var profiles = ChromeAccountActions.profiles()
+        if profiles.isEmpty {
+            let picker = NSOpenPanel()
+            picker.title = "Choose Chrome’s Local State file"
+            picker.message = "Quota Signal uses the profile names to open the correct Chrome window. Select Chrome’s Local State file."
+            picker.directoryURL = FileManager.default.homeDirectoryForCurrentUser
+                .appending(path: "Library/Application Support/Google/Chrome")
+            picker.canChooseDirectories = false
+            picker.allowsMultipleSelection = false
+            guard picker.runModal() == .OK, let url = picker.url else { return }
+            do {
+                profiles = try ChromeAccountActions.profiles(from: Data(contentsOf: url))
+                // Retain only profile names and directories, never Chrome's complete configuration.
+                UserDefaults.standard.set(try JSONEncoder().encode(profiles), forKey: "chromeProfileNames")
+            } catch {
+                NSAlert(error: error).runModal()
+                return
+            }
+        }
+        var profile = ChromeAccountActions.suggestedProfile(for: account, profiles: profiles)
+        if (reconnect || profile == nil), !profiles.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "Choose the Chrome profile for this account"
+            alert.informativeText = "Select the profile used for \(account.name). Quota Signal verifies the Claude workspace before saving this route."
+            let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 330, height: 28))
+            picker.addItems(withTitles: profiles.map(\.label))
+            if let profile, let index = profiles.firstIndex(where: { $0.id == profile.id }) {
+                picker.selectItem(at: index)
+            }
+            alert.accessoryView = picker
+            alert.addButton(withTitle: reconnect ? "Reconnect" : "Retry")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            profile = profiles[picker.indexOfSelectedItem]
+        }
+        guard let profile else {
+            let alert = NSAlert()
+            alert.messageText = "No Chrome profile is available"
+            alert.informativeText = "Open Chrome, set up a profile, and load the Quota Signal companion."
+            alert.runModal()
+            return
+        }
+        do {
+            try ChromeAccountActions.open(account: account, reconnect: reconnect, profile: profile)
+            store.poll()
         } catch {
             NSAlert(error: error).runModal()
         }
