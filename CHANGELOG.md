@@ -4,6 +4,7 @@
 
 ### Added
 
+- Dashboard reset rows now show time remaining alongside the exact local reset date and time, refreshing every 15 seconds. Expired cycles show **Awaiting new cycle** until a fresh reading arrives.
 - Account-specific **Retry now** and **Reconnect in Chrome…** actions in refresh details and dashboard context menus.
 - Chrome companion 1.4.0 accepts expiring, account-scoped commands, verifies the requested workspace, serializes concurrent jobs, and polls reconnect attempts while the user signs in.
 - Verified Chrome profile routes are remembered after success. Reconnect offers a profile selector with the remembered route selected. Ambiguous first-time routes require a selection.
@@ -24,6 +25,7 @@
 
 ### Verification
 
+- Verified all four live dashboard countdowns and added checks for minute rounding, reset expiry, missing readings, timezone formatting and both Bucharest daylight saving transitions.
 - Verified live retry and reconnect through the dedicated hello and dev Chrome profiles, including progress and successful status updates. Confirmed that a dev-only retry left the other three accounts’ refresh timestamps unchanged.
 - Added command-targeting, duplicate-click, expiry, reconnect-polling and profile-routing regression checks.
 - Live native messaging refreshes recorded successful status for all four connected accounts.

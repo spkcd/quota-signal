@@ -29,6 +29,19 @@ enum Instrument {
     static func percentage(_ number: Double) -> String {
         number.formatted(.number.precision(.fractionLength(0...1))) + "%"
     }
+
+    static func countdown(to reset: Date, from now: Date) -> String {
+        let minutes = max(0, Int(ceil(reset.timeIntervalSince(now) / 60)))
+        if minutes >= 1440 { return "\(minutes / 1440)d \((minutes / 60) % 24)h" }
+        if minutes >= 60 { return "\(minutes / 60)h \(minutes % 60)m" }
+        return "\(minutes)m"
+    }
+
+    static func resetDate(_ reset: Date, timeZone: TimeZone = .autoupdatingCurrent) -> String {
+        var style: Date.FormatStyle = .dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute()
+        style.timeZone = timeZone
+        return reset.formatted(style)
+    }
 }
 
 @MainActor struct AccountOverviewRow {
@@ -43,6 +56,14 @@ enum Instrument {
 
     var activeReading: Reading? {
         account.latest.flatMap { $0.reset > now ? $0 : nil }
+    }
+
+    var resetDescription: String {
+        guard let reading = activeReading else {
+            return account.latest == nil ? "Reset unknown" : "Awaiting new cycle"
+        }
+        return "Resets in " + Instrument.countdown(to: reading.reset, from: now)
+            + " · " + Instrument.resetDate(reading.reset)
     }
 
     var isStale: Bool {
@@ -197,8 +218,7 @@ struct PanelView: View {
         let latest = account.latest
         let activeReading = row.activeReading
         let percent = activeReading?.percent
-        let reset = activeReading.map { "Resets " + resetDate($0.reset) }
-            ?? (latest == nil ? "Reset unknown" : "Awaiting new cycle")
+        let reset = row.resetDescription
         let tokenStatus = store.localTokenStatus(for: account)
         let tokenLabel = "Claude Code · " + tokenStatus.label
         let isActive = store.activeClaudeCodeAccountID == account.id
@@ -212,7 +232,7 @@ struct PanelView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(account.name).font(.system(size: 13, weight: .semibold))
                             .lineLimit(1).truncationMode(.middle)
-                        Text(reset).font(.system(size: 11)).foregroundStyle(Instrument.muted)
+                        Text(reset).font(.system(size: 11)).monospacedDigit().foregroundStyle(Instrument.muted)
                         Text(row.freshness).font(.system(size: 11))
                             .foregroundStyle(row.isStale ? Instrument.warning : Instrument.muted)
                     }
@@ -320,8 +340,8 @@ struct PanelView: View {
                 Spacer()
                 if let reset = account.latest?.reset, !expired {
                     VStack(alignment: .trailing, spacing: 3) {
-                        Text(countdown(to: reset, from: now)).fontWeight(.semibold).monospacedDigit()
-                        Text(resetDate(reset))
+                        Text(Instrument.countdown(to: reset, from: now)).fontWeight(.semibold).monospacedDigit()
+                        Text(Instrument.resetDate(reset))
                             .font(.system(size: 11)).foregroundStyle(Instrument.muted)
                     }
                 } else {
@@ -414,16 +434,6 @@ struct PanelView: View {
         }
     }
 
-    private func resetDate(_ reset: Date) -> String {
-        reset.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute())
-    }
-
-    private func countdown(to reset: Date, from now: Date) -> String {
-        let minutes = max(0, Int(ceil(reset.timeIntervalSince(now) / 60)))
-        if minutes >= 1440 { return "\(minutes / 1440)d \((minutes / 60) % 24)h" }
-        if minutes >= 60 { return "\(minutes / 60)h \(minutes % 60)m" }
-        return "\(minutes)m"
-    }
 }
 
 struct SegmentMeter: View {
